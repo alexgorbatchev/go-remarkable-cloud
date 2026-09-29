@@ -296,8 +296,38 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 	return items, nil
 }
 
-// ResolveByID finds an item matching the exact UUID.
+// ResolveByID finds an item matching the exact UUID without listing all items.
 func (c *Client) ResolveByID(ctx context.Context, id string) (*Item, error) {
+	rootState, err := c.GetRootState(ctx)
+	if err == nil {
+		rootManifest, err := c.GetManifest(ctx, rootState.Hash, "root.docSchema")
+		if err == nil {
+			entry := rootManifest.Find(id)
+			if entry != nil {
+				itemManifest, err := c.GetManifest(ctx, entry.Hash, id+".docSchema")
+				if err == nil {
+					var meta ItemMetadata
+					if metaEntry := itemManifest.FindSuffix(".metadata"); metaEntry != nil {
+						if metaBytes, err := c.GetBlob(ctx, metaEntry.Hash, metaEntry.ID); err == nil {
+							_ = json.Unmarshal(metaBytes, &meta)
+						}
+					}
+					if meta.VisibleName == "" {
+						meta.VisibleName = id
+					}
+					return &Item{
+						ID:       id,
+						Hash:     entry.Hash,
+						Metadata: meta,
+						Entries:  itemManifest.Entries,
+						client:   c,
+					}, nil
+				}
+			}
+		}
+	}
+
+	// Fallback to full item listing if fast resolution fails or in non-standard root schema
 	items, err := c.ListItems(ctx, WithIncludeDeleted(true))
 	if err != nil {
 		return nil, err
