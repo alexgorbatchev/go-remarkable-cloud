@@ -1,0 +1,18 @@
+# Binaries and build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage artifacts
+*.out
+*.test
+coverage.html
+.coverage
+
+# Temporary files and caches
+.tmp/
+*.tmp
+.DS_Store
