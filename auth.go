@@ -12,7 +12,7 @@ import (
 )
 
 // DefaultAuthBaseURL is the default authentication service URL.
-const DefaultAuthBaseURL = "https://webapp-production-dot-remarkable-production.appspot.com"
+const DefaultAuthBaseURL = "https://webapp-prod.cloud.remarkable.engineering"
 
 // DefaultDeviceDesc is the default device description sent during pairing.
 const DefaultDeviceDesc = "desktop-macos"
