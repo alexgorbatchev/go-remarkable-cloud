@@ -10,7 +10,7 @@ import (
 
 const (
 	// DefaultDiscoveryURL is the service manager discovery endpoint.
-	DefaultDiscoveryURL = "https://service-manager-production-dot-remarkable-production.appspot.com/discovery/v1/endpoints"
+	DefaultDiscoveryURL = "https://eu.tectonic.remarkable.com/discovery/v1/endpoints"
 
 	// DefaultRawHost is the fallback tectonic API host.
 	DefaultRawHost = "https://eu.tectonic.remarkable.com"

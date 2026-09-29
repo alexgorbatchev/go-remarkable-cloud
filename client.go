@@ -100,7 +100,7 @@ type Client struct {
 func NewClient(opts ...Option) (*Client, error) {
 	c := &Client{
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 15 * time.Second,
 		},
 		endpoints:   DefaultEndpoints(),
 		authBaseURL: DefaultAuthBaseURL,
@@ -173,7 +173,7 @@ func (c *Client) RenewToken(ctx context.Context) (string, error) {
 
 	userToken, err := RenewUserToken(ctx, c.httpClient, c.authBaseURL, deviceToken)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v (run 'remarkable-sync auth <code>' to pair with a new code from https://my.remarkable.com/pair/app)", ErrUnauthorized, err)
 	}
 
 	c.mu.Lock()
