@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +85,13 @@ func WithDefaultConfigFile() Option {
 	}
 }
 
+// WithCacheDir configures a local directory for caching content-addressed blobs by hash.
+func WithCacheDir(dir string) Option {
+	return func(c *Client) {
+		c.cacheDir = dir
+	}
+}
+
 // Client coordinates authentication, discovery, and sync v3 operations with reMarkable Cloud.
 type Client struct {
 	mu                sync.RWMutex
@@ -94,6 +103,7 @@ type Client struct {
 	authBaseURL       string
 	autoRenew         bool
 	saveOnRenew       bool
+	cacheDir          string
 }
 
 // NewClient creates a new Client configured with the provided options.
@@ -280,38 +290,22 @@ func (c *Client) GetManifest(ctx context.Context, hash, filename string) (*Manif
 	if filename == "" || filename == "root" {
 		filename = "root.docSchema"
 	}
-	url := fmt.Sprintf("%s/sync/v3/files/%s", strings.TrimRight(c.endpoints.StorageHost, "/"), hash)
-
-	resp, err := c.executeWithAuth(ctx, func(token string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("rm-filename", filename)
-		return req, nil
-	})
+	data, err := c.GetBlob(ctx, hash, filename)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, ErrUnauthorized
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: file hash %s (%s)", ErrItemNotFound, hash, filename)
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get manifest failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return ParseManifest(hash, resp.Body)
+	return ParseManifest(hash, bytes.NewReader(data))
 }
 
 // GetBlob downloads the raw content bytes for a file identified by hash and rm-filename.
 func (c *Client) GetBlob(ctx context.Context, hash, filename string) ([]byte, error) {
+	if c.cacheDir != "" && hash != "" {
+		cachePath := filepath.Join(c.cacheDir, "blobs", hash)
+		if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
+			return data, nil
+		}
+	}
+
 	url := fmt.Sprintf("%s/sync/v3/files/%s", strings.TrimRight(c.endpoints.StorageHost, "/"), hash)
 
 	resp, err := c.executeWithAuth(ctx, func(token string) (*http.Request, error) {
@@ -341,7 +335,22 @@ func (c *Client) GetBlob(ctx context.Context, hash, filename string) ([]byte, er
 		return nil, fmt.Errorf("get blob failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.cacheDir != "" && hash != "" {
+		dir := filepath.Join(c.cacheDir, "blobs")
+		_ = os.MkdirAll(dir, 0755)
+		cachePath := filepath.Join(dir, hash)
+		tmpPath := fmt.Sprintf("%s.tmp.%d", cachePath, time.Now().UnixNano())
+		if err := os.WriteFile(tmpPath, data, 0644); err == nil {
+			_ = os.Rename(tmpPath, cachePath)
+		}
+	}
+
+	return data, nil
 }
 
 // GetContent fetches and JSON-unmarshals a file blob into the target value.
