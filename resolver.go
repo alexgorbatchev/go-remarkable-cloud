@@ -141,77 +141,156 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		return nil, fmt.Errorf("get root state: %w", err)
 	}
 
-	rootManifest, err := c.GetManifest(ctx, rootState.Hash, "root")
+	rootManifest, err := c.GetManifest(ctx, rootState.Hash, "root.docSchema")
 	if err != nil {
 		return nil, fmt.Errorf("get root manifest: %w", err)
 	}
 
-	// Group entries by item UUID prefix
-	type itemGroup struct {
-		id           string
-		schemaHash   string
-		metadataHash string
-		entries      []SchemaEntry
+	// Check if root manifest already lists sub-files (.metadata, .docSchema) directly
+	hasSubfiles := false
+	for _, e := range rootManifest.Entries {
+		if strings.Contains(e.ID, ".") {
+			hasSubfiles = true
+			break
+		}
 	}
-	groups := make(map[string]*itemGroup)
+
+	if hasSubfiles {
+		// Group entries by item UUID prefix
+		type itemGroup struct {
+			id           string
+			schemaHash   string
+			metadataHash string
+			entries      []SchemaEntry
+		}
+		groups := make(map[string]*itemGroup)
+
+		for _, entry := range rootManifest.Entries {
+			id := entry.ID
+			var itemID string
+			if idx := strings.IndexAny(id, "./"); idx != -1 {
+				itemID = id[:idx]
+			} else {
+				itemID = id
+			}
+
+			g, ok := groups[itemID]
+			if !ok {
+				g = &itemGroup{
+					id:      itemID,
+					entries: []SchemaEntry{},
+				}
+				groups[itemID] = g
+			}
+			g.entries = append(g.entries, entry)
+
+			if strings.HasSuffix(id, ".metadata") {
+				g.metadataHash = entry.Hash
+			} else if strings.HasSuffix(id, ".docSchema") || id == itemID {
+				g.schemaHash = entry.Hash
+			}
+		}
+
+		var items []*Item
+		for _, g := range groups {
+			var meta ItemMetadata
+			if g.metadataHash != "" {
+				blob, err := c.GetBlob(ctx, g.metadataHash, fmt.Sprintf("%s.metadata", g.id))
+				if err == nil {
+					_ = json.Unmarshal(blob, &meta)
+				}
+			}
+
+			if meta.VisibleName == "" {
+				meta.VisibleName = g.id
+			}
+			if meta.Type == "" {
+				meta.Type = ItemTypeDocument
+			}
+
+			if !options.IncludeDeleted && (meta.Deleted || meta.Parent == "trash") {
+				continue
+			}
+
+			schemaHash := g.schemaHash
+			if schemaHash == "" && len(g.entries) > 0 {
+				schemaHash = g.entries[0].Hash
+			}
+
+			item := &Item{
+				ID:       g.id,
+				Hash:     schemaHash,
+				Metadata: meta,
+				Entries:  g.entries,
+				client:   c,
+			}
+			items = append(items, item)
+		}
+		return items, nil
+	}
+
+	// Real reMarkable Cloud: each root entry is an item UUID
+	type itemResult struct {
+		item *Item
+	}
+
+	resultsChan := make(chan itemResult, len(rootManifest.Entries))
+	sem := make(chan struct{}, 16)
 
 	for _, entry := range rootManifest.Entries {
-		id := entry.ID
-		// Extract UUID part before any extension or slash
-		var itemID string
-		if idx := strings.IndexAny(id, "./"); idx != -1 {
-			itemID = id[:idx]
-		} else {
-			itemID = id
-		}
+		go func(e SchemaEntry) {
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-		g, ok := groups[itemID]
-		if !ok {
-			g = &itemGroup{
-				id:      itemID,
-				entries: []SchemaEntry{},
+			itemManifest, err := c.GetManifest(ctx, e.Hash, e.ID+".docSchema")
+			if err != nil {
+				resultsChan <- itemResult{
+					item: &Item{
+						ID:     e.ID,
+						Hash:   e.Hash,
+						client: c,
+						Metadata: ItemMetadata{
+							VisibleName: e.ID,
+						},
+					},
+				}
+				return
 			}
-			groups[itemID] = g
-		}
-		g.entries = append(g.entries, entry)
 
-		if strings.HasSuffix(id, ".metadata") {
-			g.metadataHash = entry.Hash
-		} else if strings.HasSuffix(id, ".docSchema") || id == itemID {
-			g.schemaHash = entry.Hash
-		}
+			var meta ItemMetadata
+			metaEntry := itemManifest.FindSuffix(".metadata")
+			if metaEntry != nil {
+				metaBytes, err := c.GetBlob(ctx, metaEntry.Hash, metaEntry.ID)
+				if err == nil {
+					_ = json.Unmarshal(metaBytes, &meta)
+				}
+			}
+
+			if meta.VisibleName == "" {
+				meta.VisibleName = e.ID
+			}
+
+			resultsChan <- itemResult{
+				item: &Item{
+					ID:       e.ID,
+					Hash:     e.Hash,
+					Metadata: meta,
+					Entries:  itemManifest.Entries,
+					client:   c,
+				},
+			}
+		}(entry)
 	}
 
 	var items []*Item
-	for _, g := range groups {
-		var meta ItemMetadata
-		if g.metadataHash != "" {
-			blob, err := c.GetBlob(ctx, g.metadataHash, fmt.Sprintf("%s.metadata", g.id))
-			if err == nil {
-				_ = json.Unmarshal(blob, &meta)
+	for i := 0; i < len(rootManifest.Entries); i++ {
+		res := <-resultsChan
+		if res.item != nil {
+			if !options.IncludeDeleted && (res.item.Metadata.Parent == "trash" || res.item.Metadata.Deleted) {
+				continue
 			}
+			items = append(items, res.item)
 		}
-
-		// Fallbacks if metadata was missing or empty
-		if meta.VisibleName == "" {
-			meta.VisibleName = g.id
-		}
-		if meta.Type == "" {
-			meta.Type = ItemTypeDocument
-		}
-
-		if meta.Deleted && !options.IncludeDeleted {
-			continue
-		}
-
-		it := &Item{
-			ID:       g.id,
-			Hash:     g.schemaHash,
-			Metadata: meta,
-			Entries:  g.entries,
-			client:   c,
-		}
-		items = append(items, it)
 	}
 
 	return items, nil

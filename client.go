@@ -277,8 +277,8 @@ func (c *Client) GetRootState(ctx context.Context) (*RootState, error) {
 
 // GetManifest downloads and parses the line-delimited schema records for a file hash.
 func (c *Client) GetManifest(ctx context.Context, hash, filename string) (*Manifest, error) {
-	if filename == "" {
-		filename = "root"
+	if filename == "" || filename == "root" {
+		filename = "root.docSchema"
 	}
 	url := fmt.Sprintf("%s/sync/v3/files/%s", strings.TrimRight(c.endpoints.StorageHost, "/"), hash)
 

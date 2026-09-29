@@ -65,7 +65,7 @@ func TestClient_GetManifestAndBlob(t *testing.T) {
 
 		filename := r.Header.Get("rm-filename")
 		switch filename {
-		case "root":
+		case "root", "root.docSchema":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("meta-hash:doc1.metadata:0:120\ncontent-hash:doc1.content:0:450\n"))
 		case "doc1.content":

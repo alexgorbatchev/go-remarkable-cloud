@@ -78,25 +78,45 @@ func ParseManifest(hash string, r io.Reader) (*Manifest, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		// First line is schema version number (e.g. "3" or "4")
+		if lineNum == 1 && !strings.Contains(line, ":") {
+			continue
+		}
 
 		parts := strings.Split(line, ":")
 		if len(parts) < 4 {
 			return nil, fmt.Errorf("%w: line %d has insufficient fields (%d < 4)", ErrInvalidSchema, lineNum, len(parts))
 		}
 
-		entryHash := parts[0]
-		sizeStr := parts[len(parts)-1]
-		subfilesStr := parts[len(parts)-2]
-		id := strings.Join(parts[1:len(parts)-2], ":")
+		var entryHash, id string
+		var subfiles int
+		var size int64
+		var err error
 
-		subfiles, err := strconv.Atoi(subfilesStr)
-		if err != nil {
-			return nil, fmt.Errorf("%w: line %d invalid subfiles '%s': %v", ErrInvalidSchema, lineNum, subfilesStr, err)
-		}
-
-		size, err := strconv.ParseInt(sizeStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%w: line %d invalid size '%s': %v", ErrInvalidSchema, lineNum, sizeStr, err)
+		if len(parts) >= 5 {
+			// Format: {hash}:{type}:{id}:{subfiles}:{size}
+			entryHash = parts[0]
+			id = parts[2]
+			subfiles, err = strconv.Atoi(parts[len(parts)-2])
+			if err != nil {
+				return nil, fmt.Errorf("%w: line %d invalid subfiles: %v", ErrInvalidSchema, lineNum, err)
+			}
+			size, err = strconv.ParseInt(parts[len(parts)-1], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%w: line %d invalid size: %v", ErrInvalidSchema, lineNum, err)
+			}
+		} else {
+			// 4-part legacy format: {hash}:{id}:{subfiles}:{size}
+			entryHash = parts[0]
+			id = parts[1]
+			subfiles, err = strconv.Atoi(parts[2])
+			if err != nil {
+				return nil, fmt.Errorf("%w: line %d invalid subfiles: %v", ErrInvalidSchema, lineNum, err)
+			}
+			size, err = strconv.ParseInt(parts[3], 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("%w: line %d invalid size: %v", ErrInvalidSchema, lineNum, err)
+			}
 		}
 
 		manifest.Entries = append(manifest.Entries, SchemaEntry{
