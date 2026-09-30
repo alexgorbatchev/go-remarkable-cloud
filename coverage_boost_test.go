@@ -93,15 +93,15 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token/v2/user":
-			w.Write([]byte("mock-token"))
+			_, _ = w.Write([]byte("mock-token"))
 		case "/sync/v3/root":
-			w.Write([]byte(`{"hash":"root-hash","generation":1,"schemaVersion":3}`))
+			_, _ = w.Write([]byte(`{"hash":"root-hash","generation":1,"schemaVersion":3}`))
 		case "/sync/v3/files/root-hash":
-			w.Write([]byte("doc-hash:doc-target:0:100\n"))
+			_, _ = w.Write([]byte("doc-hash:doc-target:0:100\n"))
 		case "/sync/v3/files/doc-hash":
-			w.Write([]byte("meta-hash:doc-target.metadata:0:50\n"))
+			_, _ = w.Write([]byte("meta-hash:doc-target.metadata:0:50\n"))
 		case "/sync/v3/files/meta-hash":
-			w.Write([]byte(`{"visibleName":"Target Note","type":"DocumentType"}`))
+			_, _ = w.Write([]byte(`{"visibleName":"Target Note","type":"DocumentType"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -158,7 +158,7 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 
 	// 8. GetContent error unmarshalling target
 	tsContent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not valid json"))
+		_, _ = w.Write([]byte("not valid json"))
 	}))
 	defer tsContent.Close()
 	clientContent, _ := cloud.NewClient(
@@ -174,7 +174,7 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 	// 9. RenewUserToken 500 error
 	tsError := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("server error"))
+		_, _ = w.Write([]byte("server error"))
 	}))
 	defer tsError.Close()
 
@@ -195,13 +195,10 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 }
 
 func TestResolveConfigPath_EnvPriority(t *testing.T) {
-	orig := os.Getenv("RMAPI_CONFIG")
-	defer os.Setenv("RMAPI_CONFIG", orig)
-
 	tmpFile := filepath.Join(t.TempDir(), "rmapi.conf")
 	_ = os.WriteFile(tmpFile, []byte("devicetoken: 123"), 0600)
 
-	os.Setenv("RMAPI_CONFIG", tmpFile)
+	t.Setenv("RMAPI_CONFIG", tmpFile)
 	if got, _ := cloud.ResolveConfigPath(""); got != tmpFile {
 		t.Errorf("expected %s, got %s", tmpFile, got)
 	}

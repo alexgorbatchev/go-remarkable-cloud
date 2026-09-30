@@ -19,10 +19,10 @@ func TestClient_BlobDiskCaching(t *testing.T) {
 		switch r.URL.Path {
 		case "/token/v2/user":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("mock-token"))
+			_, _ = w.Write([]byte("mock-token"))
 		case "/sync/v3/files/sample-hash":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("sample-blob-data"))
+			_, _ = w.Write([]byte("sample-blob-data"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
