@@ -5,7 +5,7 @@
 - **Full Sync v3 implementation**: Connects directly to reMarkable Cloud Sync v3 endpoints (`/sync/v3/root`, `/sync/v3/files/{hash}`).
 - **Content-addressed disk caching**: Stores downloaded blobs and manifests by SHA-256 hash, eliminating duplicate network downloads.
 - **Generation-checked document writes**: Stages file updates, verifies uploaded bytes, and commits document and root manifests while detecting concurrent root changes.
-- **Fast O(1) document resolution**: Resolves documents by UUID, hierarchical path, or title directly from `root.docSchema` without full-library scanning.
+- **Document resolution**: UUID lookup scans the root manifest in O(n) time and fetches the matching item's manifest and metadata. Name and path lookups load metadata across the library.
 - **Automated token lifecycle**: Handles 8-character device pairing and transparent user token renewal on HTTP 401 responses.
 - **Zero external dependencies**: Built using standard Go library primitives (`net/http`, `crypto/rand`, `encoding/json`).
 
@@ -18,8 +18,10 @@
 
 # How it Really Works
 
+- Metadata download and JSON decoding failures return contextual errors. Listings return an error rather than incomplete results when an item's manifest or metadata cannot be read.
+
 - When a cache directory is configured via `WithCacheDir`, `GetBlob` checks for `$CACHE_DIR/blobs/<hash>` before making network calls and writes new blobs atomically using temporary files.
-- `ResolveByID` inspects `root.docSchema` directly to locate a single document's schema hash, reducing network calls from ~150 requests down to 3.
+- For nested root manifests, `ResolveByID` reads the root state, root manifest, matching item's manifest, and metadata. Other items' metadata is not fetched; cached blobs can avoid download requests. Flattened root manifests use the listing path.
 - Client instances are safe for concurrent use across multiple goroutines; a single client should be shared across the lifetime of an application.
 - On HTTP 401 or 403 responses, the client automatically acquires a fresh session token and replays the failed request before returning an error.
 - All network calls obey the caller's `context.Context` cancellation and deadlines.
@@ -86,7 +88,7 @@ func main() {
 | `Client.UpdateDocumentFiles` | `(ctx context.Context, id, expectedHash string, files []FileUpdate) (*UpdateResult, error)` | Adds or replaces named document files; returns progress even when staging, commit, or verification fails |
 | `Client.ListItems` | `(ctx context.Context, opts ...ListOption) ([]*Item, error)` | Resolves all documents and collections in cloud storage |
 | `Client.Resolve` | `(ctx context.Context, query string) (*Item, error)` | Resolves an item by UUID, folder path, or visible title |
-| `Client.ResolveByID` | `(ctx context.Context, id string) (*Item, error)` | Fast O(1) resolution by document UUID |
+| `Client.ResolveByID` | `(ctx context.Context, id string) (*Item, error)` | UUID resolution with an O(n) root-manifest scan |
 | `Client.PairDevice` | `(ctx context.Context, code string) (string, error)` | Exchanges 8-character pairing code for a device token |
 | `Client.RenewToken` | `(ctx context.Context) (string, error)` | Mints a new short-lived session bearer token |
 
