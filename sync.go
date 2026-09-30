@@ -17,9 +17,10 @@ type RootState struct {
 }
 
 // SchemaEntry represents a single record in a document or root schema.
-// Line format: "{hash}:{id}:{subfiles}:{size}".
+// Records use "{hash}:{id}:{subfiles}:{size}" or include Type after Hash.
 type SchemaEntry struct {
 	Hash     string `json:"hash"`
+	Type     string `json:"type,omitempty"`
 	ID       string `json:"id"`
 	Subfiles int    `json:"subfiles"`
 	Size     int64  `json:"size"`
@@ -89,6 +90,7 @@ func ParseManifest(hash string, r io.Reader) (*Manifest, error) {
 		}
 
 		var entryHash, id string
+		var entryType string
 		var subfiles int
 		var size int64
 		var err error
@@ -96,6 +98,7 @@ func ParseManifest(hash string, r io.Reader) (*Manifest, error) {
 		if len(parts) >= 5 {
 			// Format: {hash}:{type}:{id}:{subfiles}:{size}
 			entryHash = parts[0]
+			entryType = parts[1]
 			id = parts[2]
 			subfiles, err = strconv.Atoi(parts[len(parts)-2])
 			if err != nil {
@@ -121,6 +124,7 @@ func ParseManifest(hash string, r io.Reader) (*Manifest, error) {
 
 		manifest.Entries = append(manifest.Entries, SchemaEntry{
 			Hash:     entryHash,
+			Type:     entryType,
 			ID:       id,
 			Subfiles: subfiles,
 			Size:     size,
@@ -134,8 +138,11 @@ func ParseManifest(hash string, r io.Reader) (*Manifest, error) {
 	return manifest, nil
 }
 
-// FormatSchemaLine formats a schema entry into "{hash}:{id}:{subfiles}:{size}".
+// FormatSchemaLine formats a schema entry, retaining its type field when present.
 func FormatSchemaLine(entry SchemaEntry) string {
+	if entry.Type != "" {
+		return fmt.Sprintf("%s:%s:%s:%d:%d\n", entry.Hash, entry.Type, entry.ID, entry.Subfiles, entry.Size)
+	}
 	return fmt.Sprintf("%s:%s:%d:%d\n", entry.Hash, entry.ID, entry.Subfiles, entry.Size)
 }
 

@@ -3,6 +3,9 @@ package cloud
 import "errors"
 
 var (
+	// ErrGenerationConflict means another client changed the cloud root before commit.
+	ErrGenerationConflict = errors.New("cloud root generation conflict")
+
 	// ErrConfigNotFound is returned when no rmapi config file can be located.
 	ErrConfigNotFound = errors.New("rmapi config file not found")
 

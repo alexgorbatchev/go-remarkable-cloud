@@ -56,7 +56,7 @@ func TestWriteManifestRoundtrip(t *testing.T) {
 		Hash: "root-hash",
 		Entries: []cloud.SchemaEntry{
 			{Hash: "h1", ID: "file1", Subfiles: 0, Size: 100},
-			{Hash: "h2", ID: "file2", Subfiles: 2, Size: 500},
+			{Hash: "h2", Type: "80000000", ID: "file2", Subfiles: 2, Size: 500},
 		},
 	}
 

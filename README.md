@@ -4,6 +4,7 @@
 
 - **Full Sync v3 implementation**: Connects directly to reMarkable Cloud Sync v3 endpoints (`/sync/v3/root`, `/sync/v3/files/{hash}`).
 - **Content-addressed disk caching**: Stores downloaded blobs and manifests by SHA-256 hash, eliminating duplicate network downloads.
+- **Generation-checked document writes**: Stages file updates, verifies uploaded bytes, and commits document and root manifests while detecting concurrent root changes.
 - **Fast O(1) document resolution**: Resolves documents by UUID, hierarchical path, or title directly from `root.docSchema` without full-library scanning.
 - **Automated token lifecycle**: Handles 8-character device pairing and transparent user token renewal on HTTP 401 responses.
 - **Zero external dependencies**: Built using standard Go library primitives (`net/http`, `crypto/rand`, `encoding/json`).
@@ -22,6 +23,8 @@
 - Client instances are safe for concurrent use across multiple goroutines; a single client should be shared across the lifetime of an application.
 - On HTTP 401 or 403 responses, the client automatically acquires a fresh session token and replays the failed request before returning an error.
 - All network calls obey the caller's `context.Context` cancellation and deadlines.
+- `UpdateDocumentFiles` requires the destination's previously inspected schema hash. It preserves unchanged file references, writes sorted document-v3 and root-v4 indexes, and broadcasts the generation-checked root commit. It downloads updated files directly from the cloud before and after commit to compare bytes and document associations.
+- Write errors return an `UpdateResult` with confirmed uploads and state: `staged` before a successful root commit, `commit-unknown` when a commit attempt cannot be confirmed, `committed` when subsequent verification fails, or `verified` on success. A rejected generation check wraps `ErrGenerationConflict`; staged blobs remain unreferenced. Callers validate document-specific page structure and handwriting conflicts before invoking this file-level operation.
 
 # Prerequisites
 
@@ -79,6 +82,8 @@ func main() {
 | `Client.GetRootState` | `(ctx context.Context) (*RootState, error)` | Fetches the current root sync generation and schema hash |
 | `Client.GetManifest` | `(ctx context.Context, hash, filename string) (*Manifest, error)` | Downloads and parses schema records for a file hash |
 | `Client.GetBlob` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw blob bytes (hits disk cache if enabled) |
+| `Client.GetBlobFresh` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw bytes directly from storage without reading or writing the disk cache |
+| `Client.UpdateDocumentFiles` | `(ctx context.Context, id, expectedHash string, files []FileUpdate) (*UpdateResult, error)` | Adds or replaces named document files; returns progress even when staging, commit, or verification fails |
 | `Client.ListItems` | `(ctx context.Context, opts ...ListOption) ([]*Item, error)` | Resolves all documents and collections in cloud storage |
 | `Client.Resolve` | `(ctx context.Context, query string) (*Item, error)` | Resolves an item by UUID, folder path, or visible title |
 | `Client.ResolveByID` | `(ctx context.Context, id string) (*Item, error)` | Fast O(1) resolution by document UUID |

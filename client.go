@@ -299,7 +299,16 @@ func (c *Client) GetManifest(ctx context.Context, hash, filename string) (*Manif
 
 // GetBlob downloads the raw content bytes for a file identified by hash and rm-filename.
 func (c *Client) GetBlob(ctx context.Context, hash, filename string) ([]byte, error) {
-	if c.cacheDir != "" && hash != "" {
+	return c.getBlob(ctx, hash, filename, true)
+}
+
+// GetBlobFresh downloads bytes directly from cloud storage, bypassing the disk cache.
+func (c *Client) GetBlobFresh(ctx context.Context, hash, filename string) ([]byte, error) {
+	return c.getBlob(ctx, hash, filename, false)
+}
+
+func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool) ([]byte, error) {
+	if cache && c.cacheDir != "" && hash != "" {
 		cachePath := filepath.Join(c.cacheDir, "blobs", hash)
 		if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
 			return data, nil
@@ -340,7 +349,7 @@ func (c *Client) GetBlob(ctx context.Context, hash, filename string) ([]byte, er
 		return nil, err
 	}
 
-	if c.cacheDir != "" && hash != "" {
+	if cache && c.cacheDir != "" && hash != "" {
 		dir := filepath.Join(c.cacheDir, "blobs")
 		_ = os.MkdirAll(dir, 0755)
 		cachePath := filepath.Join(dir, hash)
