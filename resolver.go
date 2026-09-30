@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -203,9 +204,10 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		for _, g := range groups {
 			var meta ItemMetadata
 			if g.metadataHash != "" {
-				blob, err := c.GetBlob(ctx, g.metadataHash, fmt.Sprintf("%s.metadata", g.id))
-				if err == nil {
-					_ = json.Unmarshal(blob, &meta)
+				var err error
+				meta, err = c.readItemMetadata(ctx, g.metadataHash, g.id+".metadata")
+				if err != nil {
+					return nil, err
 				}
 			}
 
@@ -240,6 +242,7 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 	// Real reMarkable Cloud: each root entry is an item UUID
 	type itemResult struct {
 		item *Item
+		err  error
 	}
 
 	resultsChan := make(chan itemResult, len(entries))
@@ -252,25 +255,17 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 
 			itemManifest, err := c.GetManifest(ctx, e.Hash, e.ID+".docSchema")
 			if err != nil {
-				resultsChan <- itemResult{
-					item: &Item{
-						ID:     e.ID,
-						Hash:   e.Hash,
-						client: c,
-						Metadata: ItemMetadata{
-							VisibleName: e.ID,
-						},
-					},
-				}
+				resultsChan <- itemResult{err: fmt.Errorf("get item %s manifest: %w", e.ID, err)}
 				return
 			}
 
 			var meta ItemMetadata
 			metaEntry := itemManifest.FindSuffix(".metadata")
 			if metaEntry != nil {
-				metaBytes, err := c.GetBlob(ctx, metaEntry.Hash, metaEntry.ID)
-				if err == nil {
-					_ = json.Unmarshal(metaBytes, &meta)
+				meta, err = c.readItemMetadata(ctx, metaEntry.Hash, metaEntry.ID)
+				if err != nil {
+					resultsChan <- itemResult{err: err}
+					return
 				}
 			}
 
@@ -291,8 +286,13 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 	}
 
 	var items []*Item
+	var errs []error
 	for i := 0; i < len(entries); i++ {
 		res := <-resultsChan
+		if res.err != nil {
+			errs = append(errs, res.err)
+			continue
+		}
 		if res.item != nil {
 			if !options.IncludeDeleted && (res.item.Metadata.Parent == "trash" || res.item.Metadata.Deleted) {
 				continue
@@ -301,41 +301,60 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		}
 	}
 
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
 	return items, nil
+}
+
+func (c *Client) readItemMetadata(ctx context.Context, hash, filename string) (ItemMetadata, error) {
+	var meta ItemMetadata
+	b, err := c.GetBlob(ctx, hash, filename)
+	if err != nil {
+		return meta, fmt.Errorf("get metadata %s: %w", filename, err)
+	}
+	if err := json.Unmarshal(b, &meta); err != nil {
+		return meta, fmt.Errorf("decode metadata %s: %w", filename, err)
+	}
+	return meta, nil
 }
 
 // ResolveByID finds an item matching the exact UUID without listing all items.
 func (c *Client) ResolveByID(ctx context.Context, id string) (*Item, error) {
 	rootState, err := c.GetRootState(ctx)
-	if err == nil {
-		rootManifest, err := c.GetManifest(ctx, rootState.Hash, "root.docSchema")
-		if err == nil {
-			entry := rootManifest.Find(id)
-			if entry != nil {
-				itemManifest, err := c.GetManifest(ctx, entry.Hash, id+".docSchema")
-				if err == nil {
-					var meta ItemMetadata
-					if metaEntry := itemManifest.FindSuffix(".metadata"); metaEntry != nil {
-						if metaBytes, err := c.GetBlob(ctx, metaEntry.Hash, metaEntry.ID); err == nil {
-							_ = json.Unmarshal(metaBytes, &meta)
-						}
-					}
-					if meta.VisibleName == "" {
-						meta.VisibleName = id
-					}
-					return &Item{
-						ID:       id,
-						Hash:     entry.Hash,
-						Metadata: meta,
-						Entries:  itemManifest.Entries,
-						client:   c,
-					}, nil
-				}
+	if err != nil {
+		return nil, fmt.Errorf("get root state: %w", err)
+	}
+	rootManifest, err := c.GetManifest(ctx, rootState.Hash, "root.docSchema")
+	if err != nil {
+		return nil, fmt.Errorf("get root manifest: %w", err)
+	}
+	entry := rootManifest.Find(id)
+	if entry != nil {
+		itemManifest, err := c.GetManifest(ctx, entry.Hash, id+".docSchema")
+		if err != nil {
+			return nil, fmt.Errorf("get item %s manifest: %w", id, err)
+		}
+		var meta ItemMetadata
+		if metaEntry := itemManifest.FindSuffix(".metadata"); metaEntry != nil {
+			meta, err = c.readItemMetadata(ctx, metaEntry.Hash, metaEntry.ID)
+			if err != nil {
+				return nil, err
 			}
 		}
+		if meta.VisibleName == "" {
+			meta.VisibleName = id
+		}
+		return &Item{
+			ID:       id,
+			Hash:     entry.Hash,
+			Metadata: meta,
+			Entries:  itemManifest.Entries,
+			client:   c,
+		}, nil
 	}
 
-	// Fallback to full item listing if fast resolution fails or in non-standard root schema
+	// Flattened roots require grouping subfiles through the listing path.
 	items, err := c.ListItems(ctx, WithIncludeDeleted(true))
 	if err != nil {
 		return nil, err
@@ -423,6 +442,8 @@ func (c *Client) Resolve(ctx context.Context, query string) (*Item, error) {
 	if !strings.Contains(query, "/") {
 		if it, err := c.ResolveByID(ctx, query); err == nil {
 			return it, nil
+		} else if !errors.Is(err, ErrItemNotFound) {
+			return nil, err
 		}
 	}
 
@@ -434,6 +455,8 @@ func (c *Client) Resolve(ctx context.Context, query string) (*Item, error) {
 	// 3. Try visible name
 	if it, err := c.ResolveByName(ctx, query); err == nil {
 		return it, nil
+	} else if !errors.Is(err, ErrItemNotFound) {
+		return nil, err
 	}
 
 	// 4. Fall back to single-segment path

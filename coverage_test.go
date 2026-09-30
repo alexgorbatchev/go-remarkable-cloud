@@ -246,6 +246,8 @@ func TestCoverageBoosters(t *testing.T) {
 		case "/sync/v3/files/root-nometa":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("hash-alone:uuid-no-meta:0:50\n"))
+		case "/sync/v3/files/hash-alone":
+			_, _ = w.Write([]byte("content:uuid-no-meta.content:0:50\n"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
