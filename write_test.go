@@ -68,7 +68,9 @@ func TestUpdateDocumentFiles(t *testing.T) {
 						root.Hash = update.Hash
 						root.Generation++
 						if failure == "root-response" {
-							fmt.Fprint(w, "invalid JSON")
+							if _, err := fmt.Fprint(w, "invalid JSON"); err != nil {
+								t.Error(err)
+							}
 							return
 						}
 					}
@@ -76,7 +78,9 @@ func TestUpdateDocumentFiles(t *testing.T) {
 					if failure == "association" && r.Method == http.MethodGet && root.Generation > 5 {
 						response.Hash = rootHash
 					}
-					json.NewEncoder(w).Encode(response)
+					if err := json.NewEncoder(w).Encode(response); err != nil {
+						t.Error(err)
+					}
 					return
 				}
 				hash := strings.TrimPrefix(r.URL.Path, "/sync/v3/files/")
@@ -111,7 +115,9 @@ func TestUpdateDocumentFiles(t *testing.T) {
 				if failure == "postverify" && root.Generation > 5 && hash == blobHash(ink) {
 					data = []byte("corrupt after commit")
 				}
-				w.Write(data)
+				if _, err := w.Write(data); err != nil {
+					t.Error(err)
+				}
 			}))
 			t.Cleanup(server.Close)
 			cacheDir := t.TempDir()

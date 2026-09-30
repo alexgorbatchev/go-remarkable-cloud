@@ -29,12 +29,16 @@ func TestListItemsAggregate(t *testing.T) {
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/sync/v3/root" {
-					fmt.Fprint(w, `{"hash":"root","schemaVersion":4}`)
+					if _, err := fmt.Fprint(w, `{"hash":"root","schemaVersion":4}`); err != nil {
+						t.Error(err)
+					}
 					return
 				}
 				for hash, blob := range blobs {
 					if r.URL.Path == "/sync/v3/files/"+hash {
-						fmt.Fprint(w, blob)
+						if _, err := fmt.Fprint(w, blob); err != nil {
+							t.Error(err)
+						}
 						return
 					}
 				}
