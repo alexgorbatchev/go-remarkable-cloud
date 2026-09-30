@@ -146,9 +146,17 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		return nil, fmt.Errorf("get root manifest: %w", err)
 	}
 
+	// Schema v4's aggregate record describes the manifest, not a cloud item.
+	entries := make([]SchemaEntry, 0, len(rootManifest.Entries))
+	for _, entry := range rootManifest.Entries {
+		if entry.ID != "." {
+			entries = append(entries, entry)
+		}
+	}
+
 	// Check if root manifest already lists sub-files (.metadata, .docSchema) directly
 	hasSubfiles := false
-	for _, e := range rootManifest.Entries {
+	for _, e := range entries {
 		if strings.Contains(e.ID, ".") {
 			hasSubfiles = true
 			break
@@ -165,7 +173,7 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		}
 		groups := make(map[string]*itemGroup)
 
-		for _, entry := range rootManifest.Entries {
+		for _, entry := range entries {
 			id := entry.ID
 			var itemID string
 			if idx := strings.IndexAny(id, "./"); idx != -1 {
@@ -234,10 +242,10 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		item *Item
 	}
 
-	resultsChan := make(chan itemResult, len(rootManifest.Entries))
+	resultsChan := make(chan itemResult, len(entries))
 	sem := make(chan struct{}, 16)
 
-	for _, entry := range rootManifest.Entries {
+	for _, entry := range entries {
 		go func(e SchemaEntry) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -283,7 +291,7 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 	}
 
 	var items []*Item
-	for i := 0; i < len(rootManifest.Entries); i++ {
+	for i := 0; i < len(entries); i++ {
 		res := <-resultsChan
 		if res.item != nil {
 			if !options.IncludeDeleted && (res.item.Metadata.Parent == "trash" || res.item.Metadata.Deleted) {
