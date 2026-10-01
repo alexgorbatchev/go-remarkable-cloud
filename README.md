@@ -5,6 +5,7 @@
 - **Full Sync v3 implementation**: Connects directly to reMarkable Cloud Sync v3 endpoints (`/sync/v3/root`, `/sync/v3/files/{hash}`).
 - **Content-addressed disk caching**: Stores downloaded blobs and manifests by SHA-256 hash, eliminating duplicate network downloads.
 - **Generation-checked document writes**: Stages file updates, verifies uploaded bytes, and commits document and root manifests while detecting concurrent root changes.
+- **Separate document creation**: Creates a document from caller-encoded files without replacing an existing ID, with precommit recovery progress and fresh byte verification.
 - **Document resolution**: UUID lookup scans the root manifest in O(n) time and fetches the matching item's manifest and metadata. Name and path lookups load metadata across the library.
 - **Automated token lifecycle**: Handles 8-character device pairing and transparent user token renewal on HTTP 401 responses.
 - **Zero external dependencies**: Built using standard Go library primitives (`net/http`, `crypto/rand`, `encoding/json`).
@@ -27,6 +28,8 @@
 - All network calls obey the caller's `context.Context` cancellation and deadlines.
 - `UpdateDocumentFiles` requires the destination's previously inspected schema hash. It preserves unchanged file references, writes sorted document-v3 and root-v4 indexes, and broadcasts the generation-checked root commit. It downloads updated files directly from the cloud before and after commit to compare bytes and document associations.
 - Write errors return an `UpdateResult` with confirmed uploads and state: `staged` before a successful root commit, `commit-unknown` when a commit attempt cannot be confirmed, `committed` when subsequent verification fails, or `verified` on success. A rejected generation check wraps `ErrGenerationConflict`; staged blobs remain unreferenced. Callers validate document-specific page structure and handwriting conflicts before invoking this file-level operation.
+- `CreateDocument` requires a caller-chosen document ID, encoded files, and the `RootState` used for folder/title preflight. It rejects an existing ID and any root hash or generation change before uploading; the commit also checks the generation. Callers construct valid PDF metadata/content, decide title collision behavior, and handle tablet initialization of native pages. The library preserves the supplied bytes and creates no native page structures.
+- Creation returns a `CreateResult` even on failure, with document ID/hash, intended root hash, preflight generation, confirmed uploads, and the same four states as file updates. The optional synchronous `OnProgress` callback runs before staging, immediately before sending the commit, after confirmation, and after fresh association/byte verification. Persist the callback's recovery identity before the commit; a callback error stops the operation, and a failure before the request returns `staged`. For `commit-unknown`, inspect the current root and document association using the recorded ID/hash before retrying, since the server may already have committed the document. Library calls do not persist progress automatically.
 
 # Prerequisites
 
@@ -86,6 +89,7 @@ func main() {
 | `Client.GetBlob` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw blob bytes (hits disk cache if enabled) |
 | `Client.GetBlobFresh` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw bytes directly from storage without reading or writing the disk cache |
 | `Client.UpdateDocumentFiles` | `(ctx context.Context, id, expectedHash string, files []FileUpdate) (*UpdateResult, error)` | Adds or replaces named document files; returns progress even when staging, commit, or verification fails |
+| `Client.CreateDocument` | `(ctx context.Context, opts CreateDocumentOptions) (*CreateResult, error)` | Creates a separate document using the caller's root snapshot; returns recovery identity and reports progress before the commit |
 | `Client.ListItems` | `(ctx context.Context, opts ...ListOption) ([]*Item, error)` | Resolves all documents and collections in cloud storage |
 | `Client.Resolve` | `(ctx context.Context, query string) (*Item, error)` | Resolves an item by UUID, folder path, or visible title |
 | `Client.ResolveByID` | `(ctx context.Context, id string) (*Item, error)` | UUID resolution with an O(n) root-manifest scan |

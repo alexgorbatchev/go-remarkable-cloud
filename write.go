@@ -57,17 +57,8 @@ func (c *Client) UpdateDocumentFiles(ctx context.Context, id, expectedHash strin
 	if err != nil {
 		return result, err
 	}
-	for _, file := range files {
-		if err := c.putVerifiedBlob(ctx, contentHash(file.Data), file.Name, file.Data); err != nil {
-			return result, fmt.Errorf("staging %s: %w", file.Name, err)
-		}
-		result.Uploaded = append(result.Uploaded, file.Name)
-	}
-	if err := c.putVerifiedBlob(ctx, update.docHash, id+".docSchema", update.docBytes); err != nil {
-		return result, fmt.Errorf("staging document manifest: %w", err)
-	}
-	if err := c.putVerifiedBlob(ctx, update.rootHash, "root.docSchema", update.rootBytes); err != nil {
-		return result, fmt.Errorf("staging root manifest: %w", err)
+	if err := c.stageDocumentFiles(ctx, id, update, files, &result.Uploaded); err != nil {
+		return result, err
 	}
 	result.RootHash = update.rootHash
 	result.State = UpdateCommitUnknown
@@ -105,15 +96,10 @@ func (c *Client) prepareDocumentUpdate(ctx context.Context, id, expectedHash str
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]bool)
+	if err := validateDocumentFiles(id, files); err != nil {
+		return nil, err
+	}
 	for _, file := range files {
-		if !strings.HasPrefix(file.Name, id+"/") && !strings.HasPrefix(file.Name, id+".") {
-			return nil, fmt.Errorf("file %q does not belong to %s", file.Name, id)
-		}
-		if strings.ContainsAny(file.Name, "\r\n:") || seen[file.Name] {
-			return nil, fmt.Errorf("invalid or duplicate file %q", file.Name)
-		}
-		seen[file.Name] = true
 		hash := contentHash(file.Data)
 		if old := manifest.Find(file.Name); old != nil {
 			old.Hash = hash
@@ -139,6 +125,39 @@ func (c *Client) prepareDocumentUpdate(ctx context.Context, id, expectedHash str
 		return nil, err
 	}
 	return &documentUpdate{generation: root.Generation, docHash: docHash, docBytes: docBytes, rootHash: rootHash, rootBytes: rootBytes}, nil
+}
+
+func validateDocumentFiles(id string, files []FileUpdate) error {
+	if len(files) == 0 {
+		return fmt.Errorf("document files are required")
+	}
+	seen := make(map[string]bool)
+	for _, file := range files {
+		if !strings.HasPrefix(file.Name, id+"/") && !strings.HasPrefix(file.Name, id+".") {
+			return fmt.Errorf("file %q does not belong to %s", file.Name, id)
+		}
+		if strings.ContainsAny(file.Name, "\r\n:") || seen[file.Name] {
+			return fmt.Errorf("invalid or duplicate file %q", file.Name)
+		}
+		seen[file.Name] = true
+	}
+	return nil
+}
+
+func (c *Client) stageDocumentFiles(ctx context.Context, id string, update *documentUpdate, files []FileUpdate, uploaded *[]string) error {
+	for _, file := range files {
+		if err := c.putVerifiedBlob(ctx, contentHash(file.Data), file.Name, file.Data); err != nil {
+			return fmt.Errorf("staging %s: %w", file.Name, err)
+		}
+		*uploaded = append(*uploaded, file.Name)
+	}
+	if err := c.putVerifiedBlob(ctx, update.docHash, id+".docSchema", update.docBytes); err != nil {
+		return fmt.Errorf("staging document manifest: %w", err)
+	}
+	if err := c.putVerifiedBlob(ctx, update.rootHash, "root.docSchema", update.rootBytes); err != nil {
+		return fmt.Errorf("staging root manifest: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) verifyDocumentFiles(ctx context.Context, id, docHash string, files []FileUpdate) error {
