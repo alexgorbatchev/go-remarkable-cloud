@@ -2,8 +2,6 @@ package cloud
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -93,9 +91,8 @@ func (c *Client) prepareDocumentCreation(ctx context.Context, opts CreateDocumen
 	if opts.ID == "" || strings.ContainsAny(opts.ID, "\r\n:/\\.") {
 		return nil, fmt.Errorf("invalid document ID %q", opts.ID)
 	}
-	hash, err := hex.DecodeString(opts.ExpectedRoot.Hash)
-	if err != nil || len(hash) != sha256.Size || opts.ExpectedRoot.Generation < 0 {
-		return nil, fmt.Errorf("valid expected root hash and generation are required")
+	if err := validateExpectedRoot(opts.ExpectedRoot); err != nil {
+		return nil, err
 	}
 	if err := validateDocumentFiles(opts.ID, opts.Files); err != nil {
 		return nil, err

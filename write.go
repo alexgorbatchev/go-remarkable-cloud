@@ -22,6 +22,16 @@ type FileUpdate struct {
 	Data []byte
 }
 
+// UpdateDocumentOptions binds file updates to the root and document inspected by
+// the caller. ExpectedRoot must be the snapshot used for all source/destination
+// preflight; ExpectedHash is the destination document hash in that snapshot.
+type UpdateDocumentOptions struct {
+	ID           string
+	ExpectedHash string
+	ExpectedRoot RootState
+	Files        []FileUpdate
+}
+
 // UpdateState identifies the last confirmed phase of a document update.
 type UpdateState string
 
@@ -57,6 +67,34 @@ func (c *Client) UpdateDocumentFiles(ctx context.Context, id, expectedHash strin
 	if err != nil {
 		return result, err
 	}
+	return c.applyDocumentUpdate(ctx, id, update, files, result)
+}
+
+// UpdateDocumentFilesAtRoot rejects a changed caller root snapshot before uploads
+// and commits against that snapshot's generation. Use it when preflight depends
+// on other documents as well as the destination. Recompute preflight after a
+// generation conflict; this operation never adopts a newer root or retries a commit.
+// It returns the same progress states and fresh file verification as UpdateDocumentFiles.
+func (c *Client) UpdateDocumentFilesAtRoot(ctx context.Context, opts UpdateDocumentOptions) (*UpdateResult, error) {
+	result := &UpdateResult{State: UpdateStaged}
+	if err := validateExpectedRoot(opts.ExpectedRoot); err != nil {
+		return result, err
+	}
+	root, err := c.GetRootState(ctx)
+	if err != nil {
+		return result, err
+	}
+	if root.Hash != opts.ExpectedRoot.Hash || root.Generation != opts.ExpectedRoot.Generation {
+		return result, fmt.Errorf("%w: root changed since update preflight", ErrGenerationConflict)
+	}
+	update, err := c.prepareDocumentUpdateFromRoot(ctx, opts.ID, opts.ExpectedHash, opts.Files, root)
+	if err != nil {
+		return result, err
+	}
+	return c.applyDocumentUpdate(ctx, opts.ID, update, opts.Files, result)
+}
+
+func (c *Client) applyDocumentUpdate(ctx context.Context, id string, update *documentUpdate, files []FileUpdate, result *UpdateResult) (*UpdateResult, error) {
 	if err := c.stageDocumentFiles(ctx, id, update, files, &result.Uploaded); err != nil {
 		return result, err
 	}
@@ -77,11 +115,18 @@ func (c *Client) UpdateDocumentFiles(ctx context.Context, id, expectedHash strin
 }
 
 func (c *Client) prepareDocumentUpdate(ctx context.Context, id, expectedHash string, files []FileUpdate) (*documentUpdate, error) {
-	if id == "" || expectedHash == "" || len(files) == 0 {
-		return nil, fmt.Errorf("document ID, expected hash, and files are required")
+	if err := validateDocumentUpdateInput(id, expectedHash, files); err != nil {
+		return nil, err
 	}
 	root, err := c.GetRootState(ctx)
 	if err != nil {
+		return nil, err
+	}
+	return c.prepareDocumentUpdateFromRoot(ctx, id, expectedHash, files, root)
+}
+
+func (c *Client) prepareDocumentUpdateFromRoot(ctx context.Context, id, expectedHash string, files []FileUpdate, root *RootState) (*documentUpdate, error) {
+	if err := validateDocumentUpdateInput(id, expectedHash, files); err != nil {
 		return nil, err
 	}
 	rootManifest, err := c.freshManifest(ctx, root.Hash, "root.docSchema")
@@ -125,6 +170,21 @@ func (c *Client) prepareDocumentUpdate(ctx context.Context, id, expectedHash str
 		return nil, err
 	}
 	return &documentUpdate{generation: root.Generation, docHash: docHash, docBytes: docBytes, rootHash: rootHash, rootBytes: rootBytes}, nil
+}
+
+func validateDocumentUpdateInput(id, expectedHash string, files []FileUpdate) error {
+	if id == "" || expectedHash == "" || len(files) == 0 {
+		return fmt.Errorf("document ID, expected hash, and files are required")
+	}
+	return nil
+}
+
+func validateExpectedRoot(root RootState) error {
+	hash, err := hex.DecodeString(root.Hash)
+	if err != nil || len(hash) != sha256.Size || root.Generation < 0 {
+		return fmt.Errorf("valid expected root hash and generation are required")
+	}
+	return nil
 }
 
 func validateDocumentFiles(id string, files []FileUpdate) error {
