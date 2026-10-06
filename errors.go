@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 var (
@@ -22,6 +23,9 @@ var (
 
 	// ErrItemNotFound is returned when a document, collection, or blob does not exist.
 	ErrItemNotFound = errors.New("item not found")
+
+	// ErrAmbiguousName is matched by every AmbiguousNameError. It never matches ErrItemNotFound.
+	ErrAmbiguousName = errors.New("ambiguous item name")
 
 	// ErrInvalidSchema is returned when a manifest or schema file is malformed.
 	ErrInvalidSchema = errors.New("invalid schema format")
@@ -61,6 +65,71 @@ func (e *StatusError) Error() string {
 // Unwrap returns the sentinel classification so errors.Is matches it.
 func (e *StatusError) Unwrap() error {
 	return e.Err
+}
+
+// AmbiguousNameError reports that a visible name, or one segment of a path, matches more than one
+// live item, so name and path resolution cannot choose between them. Callers read the candidates
+// with errors.As; errors.Is matches ErrAmbiguousName.
+type AmbiguousNameError struct {
+	// Query is the name or path the caller asked to resolve, exactly as passed to the resolver.
+	Query string
+	// Name is the visible name that matched several items: the whole query for a name lookup, or
+	// the ambiguous segment of a path.
+	Name string
+	// Candidates holds every live item that matched Name, in the order described on
+	// AmbiguousCandidate. A path lookup stops at its first ambiguous segment, so these are the
+	// candidates for that segment only.
+	Candidates []AmbiguousCandidate
+}
+
+// AmbiguousCandidate is one live item that matched an ambiguous name.
+//
+// Candidates are ordered with reachable items first, then by FolderPath, then by Item.ID, each
+// compared byte-wise. The order does not depend on the order in which the listing returned items.
+type AmbiguousCandidate struct {
+	// Item is the matching item. Item.ID selects it unambiguously.
+	Item *Item
+	// FolderPath joins with "/" the visible names of the live collections above the item, from the
+	// top level down to its parent: the segments ResolveByPath walks before the item's own name.
+	// It is empty for an item at the root.
+	FolderPath string
+	// Unreachable reports that the walk toward the root reached a parent that is not a live
+	// collection: a trashed or deleted folder, an ID absent from the listing, a document, or a
+	// parent loop. ResolveByPath cannot reach such an item, and FolderPath then holds only the live
+	// collections below that parent, empty when the item's own parent is the one that broke the walk.
+	Unreachable bool
+}
+
+// Error names the ambiguous name, the query when it differs, and each candidate's ID and folder.
+func (e *AmbiguousNameError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: %q", ErrAmbiguousName, e.Name)
+	if e.Query != e.Name {
+		fmt.Fprintf(&b, " in %q", e.Query)
+	}
+	fmt.Fprintf(&b, " matches %d items: ", len(e.Candidates))
+	for i, c := range e.Candidates {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(c.Item.ID)
+		switch {
+		case c.Unreachable && c.FolderPath == "":
+			b.WriteString(" (unreachable)")
+		case c.Unreachable:
+			fmt.Fprintf(&b, " (unreachable %q)", c.FolderPath)
+		case c.FolderPath == "":
+			b.WriteString(" (root)")
+		default:
+			fmt.Fprintf(&b, " (%q)", c.FolderPath)
+		}
+	}
+	return b.String()
+}
+
+// Unwrap returns ErrAmbiguousName so errors.Is classifies every ambiguity the same way.
+func (e *AmbiguousNameError) Unwrap() error {
+	return ErrAmbiguousName
 }
 
 // newStatusError classifies a rejected response; 401 and 403 always mean the credentials were refused.

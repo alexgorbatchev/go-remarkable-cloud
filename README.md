@@ -6,7 +6,7 @@
 - **Content-addressed disk caching**: Stores downloaded blobs and manifests by SHA-256 hash, eliminating duplicate network downloads.
 - **Generation-checked document writes**: Stages file updates, verifies uploaded bytes, and commits document and root manifests while detecting concurrent root changes.
 - **Separate document creation**: Creates a document from caller-encoded files without replacing an existing ID, with precommit recovery progress and fresh byte verification.
-- **Document resolution**: UUID lookup scans the root manifest in O(n) time and fetches the matching item's manifest and metadata. Name and path lookups load metadata across the library.
+- **Document resolution**: UUID lookup scans the root manifest in O(n) time and fetches the matching item's manifest and metadata. Name and path lookups load metadata across the library and report every candidate when a name is shared instead of picking one.
 - **Automated token lifecycle**: Handles 8-character device pairing and transparent user token renewal on HTTP 401 responses.
 - **Zero external dependencies**: Built using standard Go library primitives (`net/http`, `crypto/rand`, `encoding/json`).
 
@@ -23,6 +23,8 @@
 
 - When a cache directory is configured via `WithCacheDir`, `GetBlob` checks for `$CACHE_DIR/blobs/<hash>` before making network calls and writes new blobs atomically using temporary files.
 - For nested root manifests, `ResolveByID` reads the root state, root manifest, matching item's manifest, and metadata. Other items' metadata is not fetched; cached blobs can avoid download requests. Flattened root manifests use the listing path.
+- `ResolveByName`, `ResolveByPath`, and `Resolve` match exact, case-sensitive visible names among live items: items whose own metadata is neither deleted nor in the trash. A document inside a trashed folder is still live and resolves by name. A path walks down from the root, and every segment but the last matches only folders.
+- When a name, or one path segment, matches more than one live item, resolution fails with an `*AmbiguousNameError` instead of choosing one; `Resolve` returns it unchanged. `errors.Is(err, cloud.ErrAmbiguousName)` matches it, and it never matches `ErrItemNotFound`. `Candidates` holds every matching item with its `FolderPath`, the `/`-joined names of the live folders above it, empty at the root. When an ancestor is trashed, deleted, missing from the listing, a document, or part of a parent loop, `Unreachable` is true, `FolderPath` holds only the live folders below that break, and no path reaches the item; select it by ID. Reachable candidates come first, then candidates sort by `FolderPath` and then by ID, both byte-wise, so the same cloud state always yields the same list.
 - Client instances are safe for concurrent use across multiple goroutines; a single client should be shared across the lifetime of an application.
 - On HTTP 401 or 403 responses, the client automatically acquires a fresh session token and replays the failed request before returning an error.
 - Every rejected HTTP response returns a `*StatusError` carrying the operation name, status code, and the response body exactly as the server sent it; read it with `errors.As`. A 404 blob download also matches `ErrItemNotFound` with `errors.Is`, and a 409 or 412 root commit matches `ErrGenerationConflict`. A non-200 discovery response matches only `ErrDiscoveryFailed`, including 401 and 403; a 401 or 403 from every other request matches `ErrUnauthorized`.
@@ -96,10 +98,14 @@ func main() {
 | `Client.CreateDocument` | `(ctx context.Context, opts CreateDocumentOptions) (*CreateResult, error)` | Creates a separate document using the caller's root snapshot; returns recovery identity and reports progress before the commit |
 | `Client.ListItems` | `(ctx context.Context, opts ...ListOption) ([]*Item, error)` | Resolves all documents and collections in cloud storage |
 | `Client.Resolve` | `(ctx context.Context, query string) (*Item, error)` | Resolves an item by UUID, folder path, or visible title |
+| `Client.ResolveByName` | `(ctx context.Context, name string) (*Item, error)` | Resolves the single live item with an exact visible name |
+| `Client.ResolveByPath` | `(ctx context.Context, path string) (*Item, error)` | Resolves a `/`-separated folder path from the root |
 | `Client.ResolveByID` | `(ctx context.Context, id string) (*Item, error)` | UUID resolution with an O(n) root-manifest scan |
 | `Client.PairDevice` | `(ctx context.Context, code string) (string, error)` | Exchanges 8-character pairing code for a device token |
 | `Client.RenewToken` | `(ctx context.Context) (string, error)` | Mints a new short-lived session bearer token |
 | `StatusError` | `struct { Op string; StatusCode int; Body string; Err error }` | Rejected HTTP response; `Unwrap` returns the sentinel classification in `Err`, or nil |
+| `AmbiguousNameError` | `struct { Query string; Name string; Candidates []AmbiguousCandidate }` | A name or path segment matched several live items; `Unwrap` returns `ErrAmbiguousName` |
+| `AmbiguousCandidate` | `struct { Item *Item; FolderPath string; Unreachable bool }` | One matching item and the live folders above it |
 
 # Configuration
 
