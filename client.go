@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -183,7 +184,11 @@ func (c *Client) RenewToken(ctx context.Context) (string, error) {
 
 	userToken, err := RenewUserToken(ctx, c.httpClient, c.authBaseURL, deviceToken)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v (run 'remarkable-sync auth <code>' to pair with a new code from https://my.remarkable.com/pair/app)", ErrUnauthorized, err)
+		// A rejected device token already carries ErrUnauthorized and the server's reason.
+		if errors.Is(err, ErrUnauthorized) {
+			return "", err
+		}
+		return "", fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
 
 	c.mu.Lock()

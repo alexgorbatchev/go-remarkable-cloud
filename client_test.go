@@ -2,6 +2,7 @@ package cloud_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -190,5 +191,97 @@ func TestClient_AutoRenewTokenOn401(t *testing.T) {
 	}
 	if client.Config().UserToken != "renewed-user-token" {
 		t.Errorf("expected client config updated to renewed token, got %s", client.Config().UserToken)
+	}
+}
+
+func TestClient_RenewalFailureErrorText(t *testing.T) {
+	tests := []struct {
+		name        string
+		renewStatus int
+		renewBody   string
+		userToken   string
+		call        func(context.Context, *cloud.Client) error
+		want        string
+	}{
+		{
+			name:        "RenewToken rejected with 401",
+			renewStatus: http.StatusUnauthorized,
+			renewBody:   "invalid Authorization header",
+			call: func(ctx context.Context, c *cloud.Client) error {
+				_, err := c.RenewToken(ctx)
+				return err
+			},
+			want: "unauthorized: missing or invalid credentials: invalid Authorization header",
+		},
+		{
+			name:        "GetRootState minting a missing user token rejected with 401",
+			renewStatus: http.StatusUnauthorized,
+			renewBody:   "invalid Authorization header",
+			call: func(ctx context.Context, c *cloud.Client) error {
+				_, err := c.GetRootState(ctx)
+				return err
+			},
+			want: "unauthorized: missing or invalid credentials: invalid Authorization header",
+		},
+		{
+			name:        "GetRootState renewing a stale user token rejected with 401",
+			renewStatus: http.StatusUnauthorized,
+			renewBody:   "invalid Authorization header",
+			userToken:   "stale-user-token",
+			call: func(ctx context.Context, c *cloud.Client) error {
+				_, err := c.GetRootState(ctx)
+				return err
+			},
+			want: "auth renewal failed after 401: unauthorized: missing or invalid credentials: invalid Authorization header",
+		},
+		{
+			name:        "RenewToken failing with 500",
+			renewStatus: http.StatusInternalServerError,
+			renewBody:   "boom",
+			call: func(ctx context.Context, c *cloud.Client) error {
+				_, err := c.RenewToken(ctx)
+				return err
+			},
+			want: "unauthorized: missing or invalid credentials: renew user token failed with status 500: boom",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/token/json/2/user/new":
+					w.WriteHeader(tt.renewStatus)
+					_, _ = w.Write([]byte(tt.renewBody))
+				case "/sync/v3/root":
+					w.WriteHeader(http.StatusUnauthorized)
+				default:
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			client, err := cloud.NewClient(
+				cloud.WithAuthBaseURL(server.URL),
+				cloud.WithStorageHost(server.URL),
+				cloud.WithSaveOnRenew(false),
+				cloud.WithConfig(&cloud.Config{
+					DeviceToken: "rejected-device-token",
+					UserToken:   tt.userToken,
+				}),
+			)
+			if err != nil {
+				t.Fatalf("failed creating client: %v", err)
+			}
+
+			err = tt.call(context.Background(), client)
+			if !errors.Is(err, cloud.ErrUnauthorized) {
+				t.Fatalf("expected ErrUnauthorized, got %v", err)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("error text mismatch\n got: %q\nwant: %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
