@@ -32,9 +32,9 @@ var (
 
 // StatusError reports an HTTP response whose status the requested operation does not accept.
 // Callers read the status with errors.As. When the status has a domain meaning, Err holds the
-// matching sentinel so errors.Is also reports it: ErrUnauthorized for 401 and 403,
-// ErrItemNotFound for a missing blob, ErrGenerationConflict for a rejected root commit, and
-// ErrDiscoveryFailed for every discovery failure.
+// matching sentinel so errors.Is also reports it: ErrItemNotFound for a missing blob,
+// ErrGenerationConflict for a 409 or 412 root commit, ErrDiscoveryFailed for every discovery
+// status including 401 and 403, and ErrUnauthorized for 401 and 403 from every other request.
 type StatusError struct {
 	// Op names the request that failed, such as "get root state".
 	Op string

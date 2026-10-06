@@ -116,8 +116,12 @@ func (s *creationServer) serveRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPut {
 		s.commits++
-		if s.failure == "conflict" {
-			w.WriteHeader(http.StatusPreconditionFailed)
+		if s.failure == "conflict" || s.failure == "conflict-409" {
+			status := http.StatusPreconditionFailed
+			if s.failure == "conflict-409" {
+				status = http.StatusConflict
+			}
+			w.WriteHeader(status)
 			if _, err := fmt.Fprint(w, "generation changed"); err != nil {
 				s.t.Error(err)
 			}

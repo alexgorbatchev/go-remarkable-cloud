@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,6 +238,14 @@ func TestStatusErrorClassification(t *testing.T) {
 			wantText:   "cloud root generation conflict: commit root failed with status 412: generation changed",
 		},
 		{
+			name:       "CreateDocument commit 409",
+			call:       createDocumentFailure("conflict-409"),
+			wantStatus: http.StatusConflict,
+			wantBody:   "generation changed",
+			sentinel:   cloud.ErrGenerationConflict,
+			wantText:   "cloud root generation conflict: commit root failed with status 409: generation changed",
+		},
+		{
 			name: "DiscoverEndpoints 503",
 			call: func(t *testing.T) error {
 				server := newCannedServer(t, map[string]cannedResponse{"/discovery": {http.StatusServiceUnavailable, "discovery down"}})
@@ -295,6 +304,30 @@ func TestRenewTokenKeepsNonAuthFailuresUnclassified(t *testing.T) {
 				return err
 			},
 			check: requireTransportError,
+		},
+		{
+			name: "GetRootState renewing a stale user token from an unreachable auth service",
+			call: func(t *testing.T) error {
+				storage := newCannedServer(t, map[string]cannedResponse{rootPath: {http.StatusUnauthorized, "token expired"}})
+				c, err := cloud.NewClient(
+					cloud.WithAuthBaseURL(closedServerURL(t)),
+					cloud.WithStorageHost(storage.URL),
+					cloud.WithSaveOnRenew(false),
+					cloud.WithConfig(&cloud.Config{DeviceToken: "device-token", UserToken: "stale-user-token"}),
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = c.GetRootState(context.Background())
+				return err
+			},
+			check: func(t *testing.T, err error) {
+				t.Helper()
+				if !strings.HasPrefix(err.Error(), "auth renewal failed after 401: perform renew request: ") {
+					t.Fatalf("expected renewal failure after the storage 401, got %v", err)
+				}
+				requireTransportError(t, err)
+			},
 		},
 		{
 			name: "GetRootState minting a user token from an unreachable auth service",
