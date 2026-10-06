@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -184,11 +183,9 @@ func (c *Client) RenewToken(ctx context.Context) (string, error) {
 
 	userToken, err := RenewUserToken(ctx, c.httpClient, c.authBaseURL, deviceToken)
 	if err != nil {
-		// A rejected device token already carries ErrUnauthorized and the server's reason.
-		if errors.Is(err, ErrUnauthorized) {
-			return "", err
-		}
-		return "", fmt.Errorf("%w: %v", ErrUnauthorized, err)
+		// Only a rejected device token wraps ErrUnauthorized; transport, server, and response
+		// failures keep their own classification so callers can retry them.
+		return "", err
 	}
 
 	c.mu.Lock()
@@ -275,12 +272,8 @@ func (c *Client) GetRootState(ctx context.Context) (*RootState, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, ErrUnauthorized
-	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get root state failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, readStatusError("get root state", resp)
 	}
 
 	var rootState RootState
@@ -338,15 +331,12 @@ func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, ErrUnauthorized
-	}
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: file %s (%s)", ErrItemNotFound, hash, filename)
-	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get blob failed with status %d: %s", resp.StatusCode, string(body))
+		statusErr := readStatusError(fmt.Sprintf("get blob %s (%s)", hash, filename), resp)
+		if resp.StatusCode == http.StatusNotFound {
+			statusErr.Err = ErrItemNotFound
+		}
+		return nil, statusErr
 	}
 
 	data, err := io.ReadAll(resp.Body)

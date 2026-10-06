@@ -25,7 +25,8 @@
 - For nested root manifests, `ResolveByID` reads the root state, root manifest, matching item's manifest, and metadata. Other items' metadata is not fetched; cached blobs can avoid download requests. Flattened root manifests use the listing path.
 - Client instances are safe for concurrent use across multiple goroutines; a single client should be shared across the lifetime of an application.
 - On HTTP 401 or 403 responses, the client automatically acquires a fresh session token and replays the failed request before returning an error.
-- A failed session token renewal returns an error that wraps `ErrUnauthorized`. When the auth service rejects the device token, the error includes the service's response body. The error contains no re-pairing instructions; applications check `errors.Is(err, cloud.ErrUnauthorized)` and supply their own.
+- Every rejected HTTP response returns a `*StatusError` carrying the request, status code, and the response body exactly as the server sent it; read it with `errors.As`. A 401 or 403 response also matches `ErrUnauthorized` with `errors.Is`, a 404 blob download matches `ErrItemNotFound`, a 409 or 412 root commit matches `ErrGenerationConflict`, and a non-200 discovery response matches `ErrDiscoveryFailed`.
+- A failed session token renewal wraps `ErrUnauthorized` only when no device token is configured or the auth service rejects the device token with 401 or 403. Network failures, cancellation, deadlines, other statuses, and empty token responses keep their own errors: `errors.As` finds `*url.Error` or `*StatusError`, and `errors.Is` finds `context.Canceled` or `context.DeadlineExceeded`. Errors contain no re-pairing instructions; applications check `errors.Is(err, cloud.ErrUnauthorized)` and supply their own.
 - All network calls obey the caller's `context.Context` cancellation and deadlines.
 - `UpdateDocumentFiles` requires the destination's previously inspected schema hash. It preserves unchanged file references, writes sorted document-v3 and root-v4 indexes, and broadcasts the generation-checked root commit. It downloads updated files directly from the cloud before and after commit to compare bytes and document associations.
 - `UpdateDocumentFilesAtRoot` also requires the caller's preflight `RootState` in `UpdateDocumentOptions.ExpectedRoot`. It rejects a changed root hash or generation before uploading, including source changes that leave the destination unchanged, and commits against the same generation. Set `ID`, `ExpectedHash`, and `Files` for the destination, and inspect every source and destination against that root snapshot. A change during staging rejects the commit with `ErrGenerationConflict`; recompute preflight instead of retrying with a newer generation. Both update methods preserve unchanged document file references and freshly verify the updated files. Callers verify document-specific source preservation and other unchanged bytes after the operation.
@@ -98,6 +99,7 @@ func main() {
 | `Client.ResolveByID` | `(ctx context.Context, id string) (*Item, error)` | UUID resolution with an O(n) root-manifest scan |
 | `Client.PairDevice` | `(ctx context.Context, code string) (string, error)` | Exchanges 8-character pairing code for a device token |
 | `Client.RenewToken` | `(ctx context.Context) (string, error)` | Mints a new short-lived session bearer token |
+| `StatusError` | `struct { Op string; StatusCode int; Body string; Err error }` | Rejected HTTP response; `Unwrap` returns the sentinel classification in `Err`, or nil |
 
 # Configuration
 

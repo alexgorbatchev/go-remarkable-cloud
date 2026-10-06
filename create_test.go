@@ -74,6 +74,9 @@ func (s *creationServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		s.puts++
 		if s.failure == "upload" || (s.failure == "document-upload" && name == "created.docSchema") || (s.failure == "root-upload" && name == "root.docSchema") {
 			w.WriteHeader(http.StatusBadGateway)
+			if _, err := fmt.Fprint(w, "upload unavailable"); err != nil {
+				s.t.Error(err)
+			}
 			return
 		}
 		data, err := io.ReadAll(r.Body)
@@ -115,6 +118,16 @@ func (s *creationServer) serveRoot(w http.ResponseWriter, r *http.Request) {
 		s.commits++
 		if s.failure == "conflict" {
 			w.WriteHeader(http.StatusPreconditionFailed)
+			if _, err := fmt.Fprint(w, "generation changed"); err != nil {
+				s.t.Error(err)
+			}
+			return
+		}
+		if s.failure == "commit-error" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if _, err := fmt.Fprint(w, "commit unavailable"); err != nil {
+				s.t.Error(err)
+			}
 			return
 		}
 		var update struct {
@@ -165,7 +178,7 @@ func TestCreateDocument(t *testing.T) {
 		{"upload", cloud.UpdateStaged}, {"document-upload", cloud.UpdateStaged}, {"root-upload", cloud.UpdateStaged},
 		{"stage-bytes", cloud.UpdateStaged}, {"conflict", cloud.UpdateStaged}, {"unknown", cloud.UpdateCommitUnknown},
 		{"association", cloud.UpdateCommitted}, {"file-association", cloud.UpdateCommitted}, {"post-bytes", cloud.UpdateCommitted},
-		{"post-root-read", cloud.UpdateCommitted},
+		{"post-root-read", cloud.UpdateCommitted}, {"commit-error", cloud.UpdateCommitUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.failure, func(t *testing.T) {

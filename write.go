@@ -339,7 +339,7 @@ func (c *Client) putVerifiedBlob(ctx context.Context, hash, name string, data []
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("upload failed with HTTP %d", resp.StatusCode)
+		return readStatusError("upload "+name, resp)
 	}
 	downloaded, err := c.GetBlobFresh(ctx, hash, name)
 	if err != nil {
@@ -375,11 +375,12 @@ func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) 
 		return fmt.Errorf("root commit outcome unknown: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusPreconditionFailed {
-		return fmt.Errorf("%w: HTTP %d", ErrGenerationConflict, resp.StatusCode)
-	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("root commit failed with HTTP %d", resp.StatusCode)
+		statusErr := readStatusError("commit root", resp)
+		if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusPreconditionFailed {
+			statusErr.Err = ErrGenerationConflict
+		}
+		return statusErr
 	}
 	var result RootState
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

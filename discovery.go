@@ -60,7 +60,9 @@ func DiscoverEndpoints(ctx context.Context, client *http.Client, discoveryURL st
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return endpoints, ErrDiscoveryFailed
+		statusErr := readStatusError("discover endpoints", resp)
+		statusErr.Err = ErrDiscoveryFailed
+		return endpoints, statusErr
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)

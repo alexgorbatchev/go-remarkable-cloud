@@ -77,11 +77,8 @@ func PairDevice(ctx context.Context, client *http.Client, authBaseURL, code, dev
 		return "", fmt.Errorf("read pair response: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", fmt.Errorf("%w: %s", ErrUnauthorized, string(bodyBytes))
-	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("pair device failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return "", newStatusError("pair device", resp.StatusCode, bodyBytes)
 	}
 
 	token := strings.TrimSpace(string(bodyBytes))
@@ -124,11 +121,8 @@ func RenewUserToken(ctx context.Context, client *http.Client, authBaseURL, devic
 		return "", fmt.Errorf("read renew response: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return "", fmt.Errorf("%w: %s", ErrUnauthorized, string(bodyBytes))
-	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("renew user token failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return "", newStatusError("renew user token", resp.StatusCode, bodyBytes)
 	}
 
 	token := strings.TrimSpace(string(bodyBytes))

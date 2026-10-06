@@ -11,7 +11,7 @@ Pure Go library for the reMarkable Cloud Sync v3 API with zero external dependen
   - `sync.go`: Sync v3 root state, line-delimited schema records, and document content models.
   - `client.go`: Thread-safe client orchestrating automatic token renewals, blob fetching, and manifests.
   - `resolver.go`: Document/collection hierarchy resolution by UUID, path (`"Folder/Subfolder/Doc"`), or `visibleName`.
-  - `errors.go`: Typed sentinel errors (`ErrUnauthorized`, `ErrItemNotFound`, `ErrInvalidSchema`, etc.).
+  - `errors.go`: Typed sentinel errors (`ErrUnauthorized`, `ErrItemNotFound`, `ErrInvalidSchema`, etc.) and `StatusError`, which every non-success HTTP response returns; it unwraps to the sentinel that classifies the status (401/403 to `ErrUnauthorized`).
 - **Zero External Dependencies**: Uses only Go standard library packages (`net/http`, `encoding/json`, `crypto/rand`, etc.). No external network calls in unit tests (all tests use `net/http/httptest`).
 - **Resilient Fallbacks**: If service discovery fails, the library automatically falls back to tectonic and webapp cloud endpoints (`DefaultRawHost` and `DefaultWebappHost`).
 - **Automatic Token Lifecycle**: Seamlessly mints a new user token if missing or upon receiving `401 Unauthorized` responses when a device token is present.

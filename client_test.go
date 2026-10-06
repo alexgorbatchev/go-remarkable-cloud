@@ -211,7 +211,7 @@ func TestClient_RenewalFailureErrorText(t *testing.T) {
 				_, err := c.RenewToken(ctx)
 				return err
 			},
-			want: "unauthorized: missing or invalid credentials: invalid Authorization header",
+			want: "unauthorized: missing or invalid credentials: renew user token failed with status 401: invalid Authorization header",
 		},
 		{
 			name:        "GetRootState minting a missing user token rejected with 401",
@@ -221,7 +221,7 @@ func TestClient_RenewalFailureErrorText(t *testing.T) {
 				_, err := c.GetRootState(ctx)
 				return err
 			},
-			want: "unauthorized: missing or invalid credentials: invalid Authorization header",
+			want: "unauthorized: missing or invalid credentials: renew user token failed with status 401: invalid Authorization header",
 		},
 		{
 			name:        "GetRootState renewing a stale user token rejected with 401",
@@ -232,17 +232,7 @@ func TestClient_RenewalFailureErrorText(t *testing.T) {
 				_, err := c.GetRootState(ctx)
 				return err
 			},
-			want: "auth renewal failed after 401: unauthorized: missing or invalid credentials: invalid Authorization header",
-		},
-		{
-			name:        "RenewToken failing with 500",
-			renewStatus: http.StatusInternalServerError,
-			renewBody:   "boom",
-			call: func(ctx context.Context, c *cloud.Client) error {
-				_, err := c.RenewToken(ctx)
-				return err
-			},
-			want: "unauthorized: missing or invalid credentials: renew user token failed with status 500: boom",
+			want: "auth renewal failed after 401: unauthorized: missing or invalid credentials: renew user token failed with status 401: invalid Authorization header",
 		},
 	}
 
