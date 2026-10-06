@@ -97,6 +97,9 @@ type AmbiguousCandidate struct {
 	// collection: a trashed or deleted folder, an ID absent from the listing, a document, or a
 	// parent loop. ResolveByPath cannot reach such an item, and FolderPath then holds only the live
 	// collections below that parent, empty when the item's own parent is the one that broke the walk.
+	// A reachable candidate's FolderPath plus its name can still be ambiguous: another item in the
+	// same folder can share its name, or another folder beside one of its ancestors can share that
+	// ancestor's name. Only Item.ID always selects one candidate.
 	Unreachable bool
 }
 
