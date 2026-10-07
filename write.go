@@ -36,10 +36,16 @@ type UpdateDocumentOptions struct {
 type UpdateState string
 
 const (
-	UpdateStaged        UpdateState = "staged"
+	// UpdateStaged means the root does not reference the write: a step before the root commit
+	// failed, or the server refused the commit with a 4xx status. Staged blobs stay unreferenced.
+	UpdateStaged UpdateState = "staged"
+	// UpdateCommitUnknown means the root commit was sent without a definite answer: no response, a
+	// 5xx status, or a 200 that did not confirm the new root. Inspect fresh cloud state before retrying.
 	UpdateCommitUnknown UpdateState = "commit-unknown"
-	UpdateCommitted     UpdateState = "committed"
-	UpdateVerified      UpdateState = "verified"
+	// UpdateCommitted means the server confirmed the root commit but the operation did not complete.
+	UpdateCommitted UpdateState = "committed"
+	// UpdateVerified means the commit and fresh downloads of every written file were confirmed.
+	UpdateVerified UpdateState = "verified"
 )
 
 // UpdateResult distinguishes staged uploads, uncertain commits, and verified commits.
@@ -99,14 +105,11 @@ func (c *Client) applyDocumentUpdate(ctx context.Context, id string, update *doc
 		return result, err
 	}
 	result.RootHash = update.rootHash
-	result.State = UpdateCommitUnknown
-	if err := c.commitRoot(ctx, update.rootHash, update.generation); err != nil {
-		if errors.Is(err, ErrGenerationConflict) {
-			result.State = UpdateStaged
-		}
+	state, err := c.commitRoot(ctx, update.rootHash, update.generation)
+	result.State = state
+	if err != nil {
 		return result, err
 	}
-	result.State = UpdateCommitted
 	if err := c.verifyDocumentFiles(ctx, id, update.docHash, files); err != nil {
 		return result, err
 	}
@@ -351,14 +354,18 @@ func (c *Client) putVerifiedBlob(ctx context.Context, hash, name string, data []
 	return nil
 }
 
-func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) error {
+// commitRoot sends the generation-checked root commit and returns the state it leaves the write in.
+// A 4xx answer, including a refused token whose renewal fails before any replay, means the server
+// applied nothing, so the write stays UpdateStaged. A missing answer, a 5xx, or a 200 that does not
+// confirm the new root leaves UpdateCommitUnknown; a confirmed commit returns UpdateCommitted.
+func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) (UpdateState, error) {
 	data, err := json.Marshal(struct {
 		Hash       string `json:"hash"`
 		Generation int64  `json:"generation"`
 		Broadcast  bool   `json:"broadcast"`
 	}{hash, generation, true})
 	if err != nil {
-		return err
+		return UpdateStaged, err
 	}
 	url := strings.TrimRight(c.endpoints.StorageHost, "/") + "/sync/v3/root"
 	resp, err := c.executeWithAuth(ctx, func(token string) (*http.Request, error) {
@@ -371,23 +378,41 @@ func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) 
 		req.Header.Set("rm-filename", "roothash")
 		return req, nil
 	})
+	var renewal *renewalError
+	if errors.As(err, &renewal) {
+		return UpdateStaged, fmt.Errorf("root commit rejected: %w", err)
+	}
 	if err != nil {
-		return fmt.Errorf("root commit outcome unknown: %w", err)
+		return UpdateCommitUnknown, fmt.Errorf("root commit outcome unknown: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		statusErr := readStatusError("commit root", resp)
-		if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusPreconditionFailed {
-			statusErr.Err = ErrGenerationConflict
-		}
-		return statusErr
+		return rejectedCommitState(resp.StatusCode), commitStatusError(resp)
 	}
 	var result RootState
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decoding root commit response: %w", err)
+		return UpdateCommitUnknown, fmt.Errorf("decoding root commit response: %w", err)
 	}
 	if result.Hash != hash || result.Generation <= generation {
-		return fmt.Errorf("unexpected root commit response")
+		return UpdateCommitUnknown, fmt.Errorf("unexpected root commit response")
 	}
-	return nil
+	return UpdateCommitted, nil
+}
+
+// rejectedCommitState maps a root commit's non-200 status to the write state it leaves. A 4xx means
+// the server refused the commit and applied nothing; any other status may follow an applied commit.
+func rejectedCommitState(status int) UpdateState {
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError {
+		return UpdateStaged
+	}
+	return UpdateCommitUnknown
+}
+
+// commitStatusError classifies a root commit's non-200 response; 409 and 412 reject its generation.
+func commitStatusError(resp *http.Response) *StatusError {
+	statusErr := readStatusError("commit root", resp)
+	if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusPreconditionFailed {
+		statusErr.Err = ErrGenerationConflict
+	}
+	return statusErr
 }

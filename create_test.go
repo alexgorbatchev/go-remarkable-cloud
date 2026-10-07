@@ -20,14 +20,27 @@ import (
 )
 
 type creationServer struct {
-	t       *testing.T
-	mu      sync.Mutex
-	root    cloud.RootState
-	initial cloud.RootState
-	blobs   map[string][]byte
-	puts    int
-	commits int
-	failure string
+	t        *testing.T
+	mu       sync.Mutex
+	root     cloud.RootState
+	initial  cloud.RootState
+	blobs    map[string][]byte
+	puts     int
+	commits  int
+	renewals int
+	failure  string
+}
+
+// commitResponses maps a creation server failure to the answer for each root commit attempt in turn.
+var commitResponses = map[string][]cannedResponse{
+	"conflict":               {{http.StatusPreconditionFailed, "generation changed"}},
+	"conflict-409":           {{http.StatusConflict, "generation changed"}},
+	"commit-error":           {{http.StatusServiceUnavailable, "commit unavailable"}},
+	"commit-401":             {{http.StatusUnauthorized, "expired"}, {http.StatusUnauthorized, "expired"}},
+	"commit-401-renew-fails": {{http.StatusUnauthorized, "expired"}},
+	"commit-403":             {{http.StatusForbidden, "forbidden"}, {http.StatusForbidden, "forbidden"}},
+	"commit-400":             {{http.StatusBadRequest, `{"message":"invalid rm-filename token"}`}},
+	"commit-401-then-503":    {{http.StatusUnauthorized, "expired"}, {http.StatusServiceUnavailable, "commit unavailable"}},
 }
 
 func newCreationServer(t *testing.T, failure string) (*creationServer, *cloud.Client) {
@@ -51,7 +64,13 @@ func newCreationServer(t *testing.T, failure string) (*creationServer, *cloud.Cl
 			t.Fatal(err)
 		}
 	}
-	c, err := cloud.NewClient(cloud.WithStorageHost(server.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}), cloud.WithCacheDir(cache))
+	c, err := cloud.NewClient(
+		cloud.WithStorageHost(server.URL),
+		cloud.WithAuthBaseURL(server.URL),
+		cloud.WithSaveOnRenew(false),
+		cloud.WithConfig(&cloud.Config{DeviceToken: "device", UserToken: "test"}),
+		cloud.WithCacheDir(cache),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +80,10 @@ func newCreationServer(t *testing.T, failure string) (*creationServer, *cloud.Cl
 func (s *creationServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if r.URL.Path == renewPath {
+		s.serveRenewal(w)
+		return
+	}
 	if r.Header.Get("Authorization") != "Bearer test" {
 		s.t.Error("missing auth")
 	}
@@ -116,20 +139,15 @@ func (s *creationServer) serveRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPut {
 		s.commits++
-		if s.failure == "conflict" || s.failure == "conflict-409" {
-			status := http.StatusPreconditionFailed
-			if s.failure == "conflict-409" {
-				status = http.StatusConflict
+		if responses, ok := commitResponses[s.failure]; ok {
+			if s.commits > len(responses) {
+				s.t.Errorf("unexpected root commit attempt %d", s.commits)
+				w.WriteHeader(http.StatusTeapot)
+				return
 			}
-			w.WriteHeader(status)
-			if _, err := fmt.Fprint(w, "generation changed"); err != nil {
-				s.t.Error(err)
-			}
-			return
-		}
-		if s.failure == "commit-error" {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			if _, err := fmt.Fprint(w, "commit unavailable"); err != nil {
+			response := responses[s.commits-1]
+			w.WriteHeader(response.status)
+			if _, err := fmt.Fprint(w, response.body); err != nil {
 				s.t.Error(err)
 			}
 			return
@@ -159,6 +177,21 @@ func (s *creationServer) serveRoot(w http.ResponseWriter, r *http.Request) {
 		root.Hash = s.initial.Hash
 	}
 	if err := json.NewEncoder(w).Encode(root); err != nil {
+		s.t.Error(err)
+	}
+}
+
+// serveRenewal mints the same user token the server accepts, or rejects the device token.
+func (s *creationServer) serveRenewal(w http.ResponseWriter) {
+	s.renewals++
+	if s.failure == "commit-401-renew-fails" {
+		w.WriteHeader(http.StatusUnauthorized)
+		if _, err := fmt.Fprint(w, "device token revoked"); err != nil {
+			s.t.Error(err)
+		}
+		return
+	}
+	if _, err := fmt.Fprint(w, "test"); err != nil {
 		s.t.Error(err)
 	}
 }
@@ -237,6 +270,85 @@ func TestCreateDocument(t *testing.T) {
 				if !bytes.Equal(s.blobs[blobHash(file.Data)], file.Data) {
 					t.Fatalf("changed bytes: %s", file.Name)
 				}
+			}
+		})
+	}
+}
+
+// TestCreateDocumentCommitOutcome pins the state each root commit answer leaves: a 4xx final answer,
+// or a 401 whose renewal fails before any retry, refused the commit and leaves it staged; a 5xx
+// final answer may have been applied and leaves it commit-unknown.
+func TestCreateDocumentCommitOutcome(t *testing.T) {
+	tests := []struct {
+		failure  string
+		state    cloud.UpdateState
+		op       string
+		status   int
+		sentinel error
+		commits  int
+		renewals int
+		wantText string
+	}{
+		{
+			failure: "commit-401", state: cloud.UpdateStaged, op: "commit root", status: http.StatusUnauthorized,
+			sentinel: cloud.ErrUnauthorized, commits: 2, renewals: 1,
+			wantText: "unauthorized: missing or invalid credentials: commit root failed with status 401: expired",
+		},
+		{
+			failure: "commit-401-renew-fails", state: cloud.UpdateStaged, op: "renew user token", status: http.StatusUnauthorized,
+			sentinel: cloud.ErrUnauthorized, commits: 1, renewals: 1,
+			wantText: "root commit rejected: auth renewal failed after 401: unauthorized: missing or invalid credentials: renew user token failed with status 401: device token revoked",
+		},
+		{
+			failure: "commit-403", state: cloud.UpdateStaged, op: "commit root", status: http.StatusForbidden,
+			sentinel: cloud.ErrUnauthorized, commits: 2, renewals: 1,
+			wantText: "unauthorized: missing or invalid credentials: commit root failed with status 403: forbidden",
+		},
+		{
+			failure: "commit-400", state: cloud.UpdateStaged, op: "commit root", status: http.StatusBadRequest,
+			commits: 1, renewals: 0,
+			wantText: `commit root failed with status 400: {"message":"invalid rm-filename token"}`,
+		},
+		{
+			failure: "conflict", state: cloud.UpdateStaged, op: "commit root", status: http.StatusPreconditionFailed,
+			sentinel: cloud.ErrGenerationConflict, commits: 1, renewals: 0,
+			wantText: "cloud root generation conflict: commit root failed with status 412: generation changed",
+		},
+		{
+			failure: "commit-401-then-503", state: cloud.UpdateCommitUnknown, op: "commit root", status: http.StatusServiceUnavailable,
+			commits: 2, renewals: 1,
+			wantText: "commit root failed with status 503: commit unavailable",
+		},
+		{
+			failure: "commit-error", state: cloud.UpdateCommitUnknown, op: "commit root", status: http.StatusServiceUnavailable,
+			commits: 1, renewals: 0,
+			wantText: "commit root failed with status 503: commit unavailable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.failure, func(t *testing.T) {
+			s, c := newCreationServer(t, tt.failure)
+			result, err := c.CreateDocument(context.Background(), cloud.CreateDocumentOptions{ID: "created", ExpectedRoot: s.initial, Files: creationFiles()})
+			if result.State != tt.state {
+				t.Fatalf("state = %s, want %s (err: %v)", result.State, tt.state, err)
+			}
+			var statusErr *cloud.StatusError
+			if !errors.As(err, &statusErr) || statusErr.Op != tt.op || statusErr.StatusCode != tt.status {
+				t.Fatalf("expected %s status %d, got %v", tt.op, tt.status, err)
+			}
+			for _, sentinel := range classificationSentinels {
+				if got, want := errors.Is(err, sentinel), sentinel == tt.sentinel; got != want {
+					t.Fatalf("errors.Is(err, %q) = %v, want %v (err: %v)", sentinel, got, want, err)
+				}
+			}
+			if err.Error() != tt.wantText {
+				t.Fatalf("error text mismatch\n got: %q\nwant: %q", err.Error(), tt.wantText)
+			}
+			if s.commits != tt.commits || s.renewals != tt.renewals {
+				t.Fatalf("commits = %d, renewals = %d, want %d and %d", s.commits, s.renewals, tt.commits, tt.renewals)
+			}
+			if tt.state == cloud.UpdateStaged && s.root != s.initial {
+				t.Fatalf("staged creation changed the cloud root from %+v to %+v", s.initial, s.root)
 			}
 		})
 	}

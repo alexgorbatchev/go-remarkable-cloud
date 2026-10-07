@@ -2,7 +2,6 @@ package cloud
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -58,13 +57,10 @@ func (c *Client) CreateDocument(ctx context.Context, opts CreateDocumentOptions)
 		result.State = UpdateStaged
 		return result, err
 	}
-	if err := c.commitRoot(ctx, update.rootHash, update.generation); err != nil {
-		if errors.Is(err, ErrGenerationConflict) {
-			result.State = UpdateStaged
-		}
+	result.State, err = c.commitRoot(ctx, update.rootHash, update.generation)
+	if err != nil {
 		return result, err
 	}
-	result.State = UpdateCommitted
 	if err := reportCreationProgress(opts.OnProgress, result); err != nil {
 		return result, err
 	}

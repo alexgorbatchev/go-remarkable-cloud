@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,8 +25,22 @@ func blobHash(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+// updateCommitRejections maps an update failure to the answer every root commit attempt gets,
+// whether that answer renews the user token, whether the renewal fails, and the expected sentinel.
+var updateCommitRejections = map[string]struct {
+	response   cannedResponse
+	renews     bool
+	renewFails bool
+	sentinel   error
+}{
+	"root-401":             {response: cannedResponse{http.StatusUnauthorized, "expired"}, renews: true, sentinel: cloud.ErrUnauthorized},
+	"root-401-renew-fails": {response: cannedResponse{http.StatusUnauthorized, "expired"}, renews: true, renewFails: true, sentinel: cloud.ErrUnauthorized},
+	"root-403":             {response: cannedResponse{http.StatusForbidden, "forbidden"}, renews: true, sentinel: cloud.ErrUnauthorized},
+	"root-400":             {response: cannedResponse{http.StatusBadRequest, `{"message":"invalid rm-filename token"}`}},
+}
+
 func TestUpdateDocumentFiles(t *testing.T) {
-	for _, failure := range []string{"", "stale", "upload", "verify", "postverify", "root-conflict", "root-response", "association", "foreign", "duplicate", "delimiter", "no-files", "root-read", "document-read"} {
+	for _, failure := range []string{"", "stale", "upload", "verify", "postverify", "root-conflict", "root-response", "association", "foreign", "duplicate", "delimiter", "no-files", "root-read", "document-read", "root-401", "root-401-renew-fails", "root-403", "root-400"} {
 		t.Run(failure, func(t *testing.T) {
 			original := []byte("background")
 			ink := []byte("native ink")
@@ -36,11 +51,26 @@ func TestUpdateDocumentFiles(t *testing.T) {
 			rootHash := blobHash(rootData)
 			root := cloud.RootState{Hash: rootHash, Generation: 5, SchemaVersion: 4}
 			blobs := map[string][]byte{pdfHash: original, docHash: docData, rootHash: rootData}
+			rejection, rejected := updateCommitRejections[failure]
 			var mu sync.Mutex
 			puts := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				defer mu.Unlock()
+				if r.URL.Path == renewPath {
+					if !rejection.renews {
+						t.Error("unexpected user token renewal")
+					}
+					body := "test"
+					if rejection.renewFails {
+						w.WriteHeader(http.StatusUnauthorized)
+						body = "device token revoked"
+					}
+					if _, err := fmt.Fprint(w, body); err != nil {
+						t.Error(err)
+					}
+					return
+				}
 				if r.Header.Get("Authorization") != "Bearer test" {
 					t.Error("missing auth")
 				}
@@ -52,6 +82,13 @@ func TestUpdateDocumentFiles(t *testing.T) {
 					if r.Method == http.MethodPut {
 						if failure == "root-conflict" {
 							w.WriteHeader(http.StatusPreconditionFailed)
+							return
+						}
+						if rejected {
+							w.WriteHeader(rejection.response.status)
+							if _, err := fmt.Fprint(w, rejection.response.body); err != nil {
+								t.Error(err)
+							}
 							return
 						}
 						var update struct {
@@ -127,7 +164,13 @@ func TestUpdateDocumentFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(cacheDir, "blobs", blobHash(ink)), ink, 0600); err != nil {
 				t.Fatal(err)
 			}
-			client, err := cloud.NewClient(cloud.WithStorageHost(server.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}), cloud.WithCacheDir(cacheDir))
+			client, err := cloud.NewClient(
+				cloud.WithStorageHost(server.URL),
+				cloud.WithAuthBaseURL(server.URL),
+				cloud.WithSaveOnRenew(false),
+				cloud.WithConfig(&cloud.Config{DeviceToken: "device", UserToken: "test"}),
+				cloud.WithCacheDir(cacheDir),
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,6 +208,17 @@ func TestUpdateDocumentFiles(t *testing.T) {
 				}
 				if failure == "root-conflict" && result.State != "staged" {
 					t.Fatalf("conflict incorrectly reported uncertain commit: %+v", result)
+				}
+				if rejected {
+					var statusErr *cloud.StatusError
+					if result.State != cloud.UpdateStaged || !errors.As(err, &statusErr) || statusErr.StatusCode != rejection.response.status {
+						t.Fatalf("refused commit reported %+v, err %v; want staged with status %d", result, err, rejection.response.status)
+					}
+					for _, sentinel := range classificationSentinels {
+						if got, want := errors.Is(err, sentinel), sentinel == rejection.sentinel; got != want {
+							t.Fatalf("errors.Is(err, %q) = %v, want %v (err: %v)", sentinel, got, want, err)
+						}
+					}
 				}
 				if failure != "association" && failure != "root-response" && failure != "postverify" && root.Hash != rootHash {
 					t.Fatal("failed staging changed root")

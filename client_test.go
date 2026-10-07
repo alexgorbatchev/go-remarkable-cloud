@@ -194,6 +194,73 @@ func TestClient_AutoRenewTokenOn401(t *testing.T) {
 	}
 }
 
+// TestClient_AutoRenewTrigger pins which rejected responses renew the user token and replay the
+// request. The sync storage service answers a bearer token it cannot parse with status 400 and the
+// JSON body {"message":"token is malformed"}; no other 400 means the token was refused.
+func TestClient_AutoRenewTrigger(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		renews bool
+	}{
+		{name: "401", status: http.StatusUnauthorized, body: `{"message":"Unauthorized"}`, renews: true},
+		{name: "403", status: http.StatusForbidden, body: "forbidden", renews: true},
+		{name: "400 malformed token", status: http.StatusBadRequest, body: `{"message":"token is malformed"}`, renews: true},
+		{name: "400 validation message mentioning token", status: http.StatusBadRequest, body: `{"message":"invalid rm-filename token"}`},
+		{name: "400 malformed token message as plain text", status: http.StatusBadRequest, body: "token is malformed"},
+		{name: "400 other message field value", status: http.StatusBadRequest, body: `{"message":"token is malformed: header"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var renewals, storageCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case renewPath:
+					renewals.Add(1)
+					_, _ = w.Write([]byte("renewed-user-token"))
+				case rootPath:
+					storageCalls.Add(1)
+					if r.Header.Get("Authorization") == "Bearer renewed-user-token" {
+						_, _ = w.Write([]byte(`{"hash":"renewed-root","generation":2}`))
+						return
+					}
+					w.WriteHeader(tt.status)
+					_, _ = w.Write([]byte(tt.body))
+				default:
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			client, err := cloud.NewClient(
+				cloud.WithAuthBaseURL(server.URL),
+				cloud.WithStorageHost(server.URL),
+				cloud.WithSaveOnRenew(false),
+				cloud.WithConfig(&cloud.Config{DeviceToken: "device-token", UserToken: "stale-user-token"}),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root, err := client.GetRootState(context.Background())
+			if tt.renews {
+				if err != nil || root.Hash != "renewed-root" || renewals.Load() != 1 || storageCalls.Load() != 2 {
+					t.Fatalf("expected one renewal and a replayed request, got root %+v, err %v, renewals %d, storage calls %d", root, err, renewals.Load(), storageCalls.Load())
+				}
+				return
+			}
+			if renewals.Load() != 0 || storageCalls.Load() != 1 {
+				t.Fatalf("renewed after a 400 that does not refuse the token: renewals %d, storage calls %d", renewals.Load(), storageCalls.Load())
+			}
+			var statusErr *cloud.StatusError
+			if !errors.As(err, &statusErr) || statusErr.StatusCode != tt.status || statusErr.Body != tt.body || statusErr.Err != nil {
+				t.Fatalf("expected unclassified status %d with body %q, got %v", tt.status, tt.body, err)
+			}
+		})
+	}
+}
+
 func TestClient_RenewalFailureErrorText(t *testing.T) {
 	tests := []struct {
 		name        string

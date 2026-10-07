@@ -64,7 +64,8 @@ func WithStorageHost(storageHost string) Option {
 	}
 }
 
-// WithAutoRenew controls whether the client automatically mints a new user token on 401.
+// WithAutoRenew controls whether the client mints a new user token and replays the request once when
+// the cloud refuses the token: a 401, a 403, or a 400 whose JSON message is "token is malformed".
 func WithAutoRenew(autoRenew bool) Option {
 	return func(c *Client) {
 		c.autoRenew = autoRenew
@@ -233,26 +234,62 @@ func (c *Client) executeWithAuth(ctx context.Context, makeReq func(userToken str
 		return nil, err
 	}
 
-	// Auto-renew on 401/403 or malformed token if enabled
-	if c.autoRenew && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusBadRequest) {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest || strings.Contains(string(bodyBytes), "token") {
-			newToken, renewErr := c.RenewToken(ctx)
-			if renewErr != nil {
-				return nil, fmt.Errorf("auth renewal failed after %d: %w", resp.StatusCode, renewErr)
-			}
-
-			retryReq, err := makeReq(newToken)
-			if err != nil {
-				return nil, err
-			}
-			return c.httpClient.Do(retryReq)
-		}
-		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	if !c.autoRenew || !tokenRefused(resp) {
+		return resp, nil
+	}
+	_ = resp.Body.Close()
+	newToken, renewErr := c.RenewToken(ctx)
+	if renewErr != nil {
+		return nil, &renewalError{status: resp.StatusCode, err: renewErr}
 	}
 
-	return resp, nil
+	retryReq, err := makeReq(newToken)
+	if err != nil {
+		return nil, err
+	}
+	return c.httpClient.Do(retryReq)
+}
+
+// malformedTokenMessage is the message field of the JSON body the sync storage service sends with
+// status 400 for a bearer token it cannot parse.
+const malformedTokenMessage = "token is malformed"
+
+// tokenRefused reports whether resp refused the request's user token: any 401 or 403, or a 400 whose
+// body is the storage service's malformed-token message. Every other 400 rejects the request itself,
+// so renewing the token and replaying the request could not change the answer. A 400 body stays
+// readable for the caller.
+func tokenRefused(resp *http.Response) bool {
+	switch resp.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	case http.StatusBadRequest:
+		// A failed read leaves a partial body that cannot match; the caller reports the 400 itself.
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		var reply struct {
+			Message string `json:"message"`
+		}
+		return json.Unmarshal(body, &reply) == nil && reply.Message == malformedTokenMessage
+	}
+	return false
+}
+
+// renewalError reports that the server refused a request's user token with status and that minting a
+// new token failed, so the request was not replayed. The server answered the request, so it applied
+// nothing.
+type renewalError struct {
+	status int
+	err    error
+}
+
+func (e *renewalError) Error() string {
+	return fmt.Sprintf("auth renewal failed after %d: %v", e.status, e.err)
+}
+
+// Unwrap returns the renewal failure so its classification reaches the caller.
+func (e *renewalError) Unwrap() error {
+	return e.err
 }
 
 // GetRootState retrieves the root sync generation and schema hash.
