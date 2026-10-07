@@ -68,8 +68,8 @@ func (e *StatusError) Unwrap() error {
 
 // AmbiguousNameError reports that a visible name, or one segment of a path, matches more than one
 // live item, so name and path resolution cannot choose between them. Its Error text states only
-// the name and the candidate count; callers read and render the candidates with errors.As.
-// errors.Is matches ErrAmbiguousName.
+// the name, the query when it differs, and the candidate count; callers read and render the
+// candidates with errors.As. errors.Is matches ErrAmbiguousName.
 type AmbiguousNameError struct {
 	// Query is the name or path the caller asked to resolve, exactly as passed to the resolver.
 	Query string

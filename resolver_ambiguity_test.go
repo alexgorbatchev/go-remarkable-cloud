@@ -144,14 +144,15 @@ func requireAmbiguous(t *testing.T, err error, query, name string, want []candid
 	if !slices.Equal(got, want) {
 		t.Fatalf("candidates =\n%+v\nwant\n%+v", got, want)
 	}
-	// Candidates reach callers only through the typed fields; the text states their count.
-	if !strings.Contains(err.Error(), fmt.Sprintf(" matches %d items", len(want))) {
-		t.Fatalf("error text %q does not state %d candidates", err.Error(), len(want))
+	// Candidates reach callers only through the typed fields; the text states only the name, the
+	// query when it differs, and the candidate count.
+	wantText := fmt.Sprintf("ambiguous item name: %q", name)
+	if query != name {
+		wantText += fmt.Sprintf(" in %q", query)
 	}
-	for _, c := range want {
-		if strings.Contains(err.Error(), c.ID) {
-			t.Fatalf("error text %q inlines candidate %s", err.Error(), c.ID)
-		}
+	wantText += fmt.Sprintf(" matches %d items", len(want))
+	if got := err.Error(); got != wantText {
+		t.Fatalf("error text =\n%s\nwant\n%s", got, wantText)
 	}
 }
 
