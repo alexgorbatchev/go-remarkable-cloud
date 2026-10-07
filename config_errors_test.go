@@ -3,6 +3,7 @@ package cloud_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -226,5 +227,76 @@ func TestRequestRenewalReportsUnsavedToken(t *testing.T) {
 				t.Errorf("handler received %v, want one ErrConfigNotSaved wrapping the write error", reported)
 			}
 		})
+	}
+}
+
+// dirNames lists the names in dir.
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func TestWriteConfigFileLeavesNoTemporaryFile(t *testing.T) {
+	tests := []struct {
+		name  string
+		cfg   *cloud.Config
+		setup func(t *testing.T, path string)
+		want  []string
+	}{
+		{"config cannot be encoded", nil, func(t *testing.T, path string) {}, []string{}},
+		{"destination is a directory", &cloud.Config{DeviceToken: "device", UserToken: "user"}, func(t *testing.T, path string) {
+			if err := os.Mkdir(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}, []string{"config"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config")
+			tt.setup(t, path)
+
+			if err := cloud.WriteConfigFile(path, tt.cfg); err == nil {
+				t.Fatal("WriteConfigFile succeeded")
+			}
+			if got := dirNames(t, dir); strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Errorf("directory holds %q after the failed write, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWriteConfigFileConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	const writers = 16
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Go(func() {
+			errs <- cloud.WriteConfigFile(path, &cloud.Config{DeviceToken: fmt.Sprintf("device-%d", i)})
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent WriteConfigFile: %v", err)
+		}
+	}
+	cfg, err := cloud.ReadConfigFile(path)
+	if err != nil || !strings.HasPrefix(cfg.DeviceToken, "device-") {
+		t.Fatalf("config after concurrent writes = %+v, %v", cfg, err)
+	}
+	if got := dirNames(t, dir); len(got) != 1 {
+		t.Errorf("directory holds %q, want only config", got)
 	}
 }

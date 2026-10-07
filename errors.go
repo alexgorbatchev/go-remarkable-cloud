@@ -32,9 +32,13 @@ var (
 	// ErrDiscoveryFailed is returned when service discovery fails.
 	ErrDiscoveryFailed = errors.New("service discovery failed")
 
-	// ErrInvalidBlobHash is returned when a blob hash that would name a disk cache entry is not 64
-	// lowercase hexadecimal digits, the form of every sync v3 SHA-256 blob address.
+	// ErrInvalidBlobHash is returned, before any request or cache access, when a requested blob hash
+	// is not 64 lowercase hexadecimal digits, the form of every sync v3 SHA-256 blob address.
 	ErrInvalidBlobHash = errors.New("invalid blob hash")
+
+	// ErrBlobHashMismatch is returned when downloaded blob bytes do not match the hash they were
+	// requested by.
+	ErrBlobHashMismatch = errors.New("downloaded blob does not match its hash")
 
 	// ErrConfigNotSaved is returned when a renewed user token could not be written to the config
 	// file. The renewed token is valid and the client keeps using it.

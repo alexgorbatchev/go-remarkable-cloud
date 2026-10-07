@@ -124,17 +124,20 @@ func TestClient_SaveOnRenew(t *testing.T) {
 }
 
 func TestClient_GetErrors(t *testing.T) {
+	notFound := unpublished("notfound")
+	badManifest := blobHash([]byte("invalid:format"))
+	serverError := unpublished("servererror")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/sync/v3/root":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("internal root error"))
-		case "/sync/v3/files/notfound":
+		case "/sync/v3/files/" + notFound:
 			w.WriteHeader(http.StatusNotFound)
-		case "/sync/v3/files/badmanifest":
+		case "/sync/v3/files/" + badManifest:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("invalid:format"))
-		case "/sync/v3/files/servererror":
+		case "/sync/v3/files/" + serverError:
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte("gateway error"))
 		}
@@ -155,31 +158,31 @@ func TestClient_GetErrors(t *testing.T) {
 	}
 
 	// 404 manifest
-	_, err = c.GetManifest(ctx, "notfound", "")
+	_, err = c.GetManifest(ctx, notFound, "")
 	if !errors.Is(err, cloud.ErrItemNotFound) {
 		t.Errorf("expected ErrItemNotFound, got %v", err)
 	}
 
 	// Invalid manifest schema
-	_, err = c.GetManifest(ctx, "badmanifest", "")
+	_, err = c.GetManifest(ctx, badManifest, "")
 	if !errors.Is(err, cloud.ErrInvalidSchema) {
 		t.Errorf("expected ErrInvalidSchema, got %v", err)
 	}
 
 	// 502 manifest
-	_, err = c.GetManifest(ctx, "servererror", "")
+	_, err = c.GetManifest(ctx, serverError, "")
 	if err == nil || !strings.Contains(err.Error(), "502") {
 		t.Errorf("expected 502 error getting manifest, got %v", err)
 	}
 
 	// 404 blob
-	_, err = c.GetBlob(ctx, "notfound", "file.bin")
+	_, err = c.GetBlob(ctx, notFound, "file.bin")
 	if !errors.Is(err, cloud.ErrItemNotFound) {
 		t.Errorf("expected ErrItemNotFound, got %v", err)
 	}
 
 	// 502 blob
-	_, err = c.GetBlob(ctx, "servererror", "file.bin")
+	_, err = c.GetBlob(ctx, serverError, "file.bin")
 	if err == nil || !strings.Contains(err.Error(), "502") {
 		t.Errorf("expected 502 error getting blob, got %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	cloud "github.com/alexgorbatchev/go-remarkable-cloud"
@@ -13,37 +14,30 @@ import (
 func TestListItemsAggregate(t *testing.T) {
 	for _, layout := range []string{"nested", "flat", "empty"} {
 		t.Run(layout, func(t *testing.T) {
-			root := "4\n0:.:75:211191896\n"
+			blobs := blobFixtures{}
+			docMeta := blobs.add(`{"visibleName":"2026 - Daily","type":"DocumentType","parent":"folder","lastModified":"1790799655380"}`)
+			folderMeta := blobs.add(`{"visibleName":"Plans","type":"CollectionType"}`)
+			docSchema := blobs.manifest(docMeta + ":doc.metadata:0:100")
+			folderSchema := blobs.manifest(folderMeta + ":folder.metadata:0:100")
+			lines := []string{"4", "0:.:75:211191896"}
 			switch layout {
 			case "nested":
-				root += "doc-schema:doc:0:100\nfolder-schema:folder:0:100\n"
+				lines = append(lines, docSchema+":doc:0:100", folderSchema+":folder:0:100")
 			case "flat":
-				root += "doc-meta:doc.metadata:0:100\nfolder-meta:folder.metadata:0:100\n"
+				lines = append(lines, docMeta+":doc.metadata:0:100", folderMeta+":folder.metadata:0:100")
 			}
-			blobs := map[string]string{
-				"root":          root,
-				"doc-schema":    "doc-meta:doc.metadata:0:100\n",
-				"folder-schema": "folder-meta:folder.metadata:0:100\n",
-				"doc-meta":      `{"visibleName":"2026 - Daily","type":"DocumentType","parent":"folder","lastModified":"1790799655380"}`,
-				"folder-meta":   `{"visibleName":"Plans","type":"CollectionType"}`,
-			}
+			root := blobs.manifest(lines...)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/sync/v3/root" {
-					if _, err := fmt.Fprint(w, `{"hash":"root","schemaVersion":4}`); err != nil {
+					if _, err := fmt.Fprintf(w, `{"hash":%q,"schemaVersion":4}`, root); err != nil {
 						t.Error(err)
 					}
 					return
 				}
-				for hash, blob := range blobs {
-					if r.URL.Path == "/sync/v3/files/"+hash {
-						if _, err := fmt.Fprint(w, blob); err != nil {
-							t.Error(err)
-						}
-						return
-					}
+				if _, published := blobs[strings.TrimPrefix(r.URL.Path, "/sync/v3/files/")]; !published {
+					t.Errorf("unexpected request: %s", r.URL.Path)
 				}
-				t.Errorf("unexpected request: %s", r.URL.Path)
-				http.NotFound(w, r)
+				blobs.serve(w, r)
 			}))
 			t.Cleanup(server.Close)
 			client, err := cloud.NewClient(cloud.WithStorageHost(server.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}))

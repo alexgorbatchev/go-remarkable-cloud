@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -57,25 +58,17 @@ func TestClient_GetRootState(t *testing.T) {
 }
 
 func TestClient_GetManifestAndBlob(t *testing.T) {
+	blobs := blobFixtures{}
+	contentHash := blobs.add(`{"fileType": "pdf", "pageCount": 10}`)
+	rootHash := blobs.manifest(unpublished("meta")+":doc1.metadata:0:120", contentHash+":doc1.content:0:450")
+	rawHash := blobs.add("raw-blob-content")
+	wantFilenames := map[string]string{rootHash: "root.docSchema", contentHash: "doc1.content", rawHash: "custom.bin"}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sync/v3/files/file-hash-123" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
+		hash := strings.TrimPrefix(r.URL.Path, "/sync/v3/files/")
+		if want, ok := wantFilenames[hash]; !ok || r.Header.Get("rm-filename") != want {
+			t.Errorf("unexpected request %s with rm-filename %q", r.URL.Path, r.Header.Get("rm-filename"))
 		}
-
-		filename := r.Header.Get("rm-filename")
-		switch filename {
-		case "root", "root.docSchema":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("meta-hash:doc1.metadata:0:120\ncontent-hash:doc1.content:0:450\n"))
-		case "doc1.content":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"fileType": "pdf", "pageCount": 10}`))
-		default:
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("raw-blob-content"))
-		}
+		blobs.serve(w, r)
 	}))
 	defer server.Close()
 
@@ -92,7 +85,7 @@ func TestClient_GetManifestAndBlob(t *testing.T) {
 	ctx := context.Background()
 
 	// Test GetManifest
-	manifest, err := client.GetManifest(ctx, "file-hash-123", "root")
+	manifest, err := client.GetManifest(ctx, rootHash, "root")
 	if err != nil {
 		t.Fatalf("unexpected error getting manifest: %v", err)
 	}
@@ -101,7 +94,7 @@ func TestClient_GetManifestAndBlob(t *testing.T) {
 	}
 
 	// Test GetBlob
-	blob, err := client.GetBlob(ctx, "file-hash-123", "custom.bin")
+	blob, err := client.GetBlob(ctx, rawHash, "custom.bin")
 	if err != nil {
 		t.Fatalf("unexpected error getting blob: %v", err)
 	}
@@ -110,7 +103,7 @@ func TestClient_GetManifestAndBlob(t *testing.T) {
 	}
 
 	// Test GetDocumentContent
-	dc, err := client.GetDocumentContent(ctx, "file-hash-123", "doc1.content")
+	dc, err := client.GetDocumentContent(ctx, contentHash, "doc1.content")
 	if err != nil {
 		t.Fatalf("unexpected error getting document content: %v", err)
 	}

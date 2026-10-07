@@ -53,11 +53,11 @@ func TestCoverageBoosters(t *testing.T) {
 	if !errors.Is(err, cloud.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized on root 401, got %v", err)
 	}
-	_, err = c401.GetManifest(ctx, "hash", "")
+	_, err = c401.GetManifest(ctx, unpublished("manifest"), "")
 	if !errors.Is(err, cloud.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized on manifest 401, got %v", err)
 	}
-	_, err = c401.GetBlob(ctx, "hash", "")
+	_, err = c401.GetBlob(ctx, unpublished("blob"), "")
 	if !errors.Is(err, cloud.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized on blob 401, got %v", err)
 	}
@@ -75,14 +75,15 @@ func TestCoverageBoosters(t *testing.T) {
 	)
 
 	var target map[string]any
-	err = cBadJSON.GetContent(ctx, "h", "f", &target)
-	if err == nil {
-		t.Error("expected unmarshal error in GetContent, got nil")
+	badJSON := blobHash([]byte("not-valid-json{"))
+	err = cBadJSON.GetContent(ctx, badJSON, "f", &target)
+	if err == nil || !strings.Contains(err.Error(), "unmarshal content (f)") {
+		t.Errorf("expected unmarshal error in GetContent, got %v", err)
 	}
 
-	_, err = cBadJSON.GetDocumentContent(ctx, "h", "f")
-	if err == nil {
-		t.Error("expected unmarshal error in GetDocumentContent, got nil")
+	_, err = cBadJSON.GetDocumentContent(ctx, badJSON, "f")
+	if err == nil || !strings.Contains(err.Error(), "unmarshal content (f)") {
+		t.Errorf("expected unmarshal error in GetDocumentContent, got %v", err)
 	}
 
 	// 5. DiscoverEndpoints invalid JSON
@@ -184,7 +185,7 @@ func TestCoverageBoosters(t *testing.T) {
 	itemWithSchemaEntry := &cloud.Item{
 		ID: "item123",
 		Entries: []cloud.SchemaEntry{
-			{Hash: "schema-hash-xyz", ID: "item123.docSchema"},
+			{Hash: blobHash([]byte("h1:doc1.pdf:0:100\n")), ID: "item123.docSchema"},
 		},
 	}
 	itemWithSchemaEntry.BindClient(cItemSchema)
@@ -238,17 +239,14 @@ func TestCoverageBoosters(t *testing.T) {
 	}
 
 	// 16. Fallback item in ListItems when no metadata exists
+	noMetaBlobs := blobFixtures{}
+	noMetaRoot := noMetaBlobs.manifest(noMetaBlobs.manifest(unpublished("content")+":uuid-no-meta.content:0:50") + ":uuid-no-meta:0:50")
 	serverNoMeta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/sync/v3/root":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"hash": "root-nometa", "generation": 1, "schemaVersion": 3}`))
-		case "/sync/v3/files/root-nometa":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("hash-alone:uuid-no-meta:0:50\n"))
-		case "/sync/v3/files/hash-alone":
-			_, _ = w.Write([]byte("content:uuid-no-meta.content:0:50\n"))
-		default:
+		if r.URL.Path == "/sync/v3/root" {
+			_, _ = w.Write([]byte(`{"hash": "` + noMetaRoot + `", "generation": 1, "schemaVersion": 3}`))
+			return
+		}
+		if !noMetaBlobs.serve(w, r) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))

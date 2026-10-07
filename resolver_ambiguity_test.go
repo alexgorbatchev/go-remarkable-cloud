@@ -47,61 +47,45 @@ var ambiguityFixture = []listingItem{
 	{id: "doc-unique", name: "Unique", parent: "folder-archive"},
 }
 
-// newShuffledListingClient serves items in a nested or flat root manifest whose line order changes on every request.
+// newShuffledListingClient serves items in a nested or flat root manifest whose line order changes on
+// every root state request: each request publishes a newly shuffled root manifest under its own hash.
 func newShuffledListingClient(t *testing.T, layout string, items []listingItem, seed uint64) *cloud.Client {
 	t.Helper()
 	var mu sync.Mutex
 	rng := rand.New(rand.NewPCG(seed, seed))
-	byID := make(map[string]listingItem, len(items))
+	blobs := blobFixtures{}
+	lines := make([]string, 0, len(items))
 	for _, it := range items {
-		byID[it.id] = it
+		itemType := cloud.ItemTypeDocument
+		if it.folder {
+			itemType = cloud.ItemTypeCollection
+		}
+		b, err := json.Marshal(cloud.ItemMetadata{VisibleName: it.name, Type: itemType, Parent: it.parent, Deleted: it.deleted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := blobs.add(string(b))
+		if layout == "flat" {
+			lines = append(lines, meta+":"+it.id+".metadata:0:1")
+		} else {
+			lines = append(lines, blobs.manifest(meta+":"+it.id+".metadata:0:1")+":"+it.id+":0:1")
+		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		var body string
-		switch {
-		case path == "/sync/v3/root":
-			body = `{"hash":"root","generation":1,"schemaVersion":3}`
-		case path == "/sync/v3/files/root":
-			lines := make([]string, 0, len(items))
-			for _, it := range items {
-				if layout == "flat" {
-					lines = append(lines, "meta-"+it.id+":"+it.id+".metadata:0:1")
-				} else {
-					lines = append(lines, "schema-"+it.id+":"+it.id+":0:1")
-				}
-			}
-			mu.Lock()
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/sync/v3/root" {
 			rng.Shuffle(len(lines), func(i, j int) { lines[i], lines[j] = lines[j], lines[i] })
-			mu.Unlock()
-			body = strings.Join(lines, "\n") + "\n"
-		case strings.HasPrefix(path, "/sync/v3/files/schema-"):
-			id := strings.TrimPrefix(path, "/sync/v3/files/schema-")
-			body = "meta-" + id + ":" + id + ".metadata:0:1\n"
-		case strings.HasPrefix(path, "/sync/v3/files/meta-"):
-			it, ok := byID[strings.TrimPrefix(path, "/sync/v3/files/meta-")]
-			if !ok {
-				t.Errorf("unexpected metadata path: %s", path)
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			itemType := cloud.ItemTypeDocument
-			if it.folder {
-				itemType = cloud.ItemTypeCollection
-			}
-			b, err := json.Marshal(cloud.ItemMetadata{VisibleName: it.name, Type: itemType, Parent: it.parent, Deleted: it.deleted})
-			if err != nil {
+			root := blobs.manifest(lines...)
+			if _, err := w.Write([]byte(`{"hash":"` + root + `","generation":1,"schemaVersion":3}`)); err != nil {
 				t.Error(err)
 			}
-			body = string(b)
-		default:
-			t.Errorf("unexpected path: %s", path)
-			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		if _, err := w.Write([]byte(body)); err != nil {
-			t.Error(err)
+		if _, published := blobs[strings.TrimPrefix(r.URL.Path, "/sync/v3/files/")]; !published {
+			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
+		blobs.serve(w, r)
 	}))
 	t.Cleanup(server.Close)
 	client, err := cloud.NewClient(cloud.WithStorageHost(server.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}))

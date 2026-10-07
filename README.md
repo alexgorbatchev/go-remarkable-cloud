@@ -3,7 +3,7 @@
 # What It Does
 
 - **Full Sync v3 implementation**: Connects directly to reMarkable Cloud Sync v3 endpoints (`/sync/v3/root`, `/sync/v3/files/{hash}`).
-- **Verified, private disk caching**: Stores downloaded blobs and manifests by SHA-256 hash in owner-only files, eliminating duplicate network downloads, and serves an entry only after checking its bytes against its hash.
+- **Verified, private disk caching**: Checks every downloaded blob and manifest against the SHA-256 hash it was requested by, and stores them by that hash in owner-only files, eliminating duplicate network downloads.
 - **Generation-checked document writes**: Stages file updates, verifies uploaded bytes, and commits document and root manifests while detecting concurrent root changes.
 - **Separate document creation**: Creates a document from caller-encoded files without replacing an existing ID, with precommit recovery progress and fresh byte verification.
 - **Document resolution**: UUID lookup scans the root manifest in O(n) time and fetches the matching item's manifest and metadata. Name and path lookups load metadata across the library and report every candidate when a name is shared instead of picking one.
@@ -12,7 +12,7 @@
 
 # How It Works
 
-- Loads existing credentials from `$XDG_CONFIG_HOME/remarkable-cli/config.json` or `~/.rmapi`, or pairs a new device token.
+- Takes credentials from `WithConfig`, from the rmapi-format file (`devicetoken:` and `usertoken:` lines) named by `WithConfigFile`, or, with `WithDefaultConfigFile`, from the first existing file among `$RMAPI_CONFIG` (a file, or `.rmapi`, `.rmapi.conf`, `rmapi/.rmapi`, or `rmapi/rmapi.conf` inside it), `~/.rmapi`, `~/.rmapi.conf`, `rmapi/rmapi.conf` or `rmapi/.rmapi` under `$XDG_CONFIG_HOME` (default `~/.config`), and the same two under `~/Library/Application Support`. It can also pair a new device token.
 - Queries service discovery endpoints to resolve active auth and storage hosts.
 - Fetches the root generation state and line-delimited schema manifests.
 - Downloads content-addressed file blobs (PDF stationery, EPUB, content schemas, `.rm` vector strokes) and deserializes metadata.
@@ -22,8 +22,9 @@
 - Metadata download and JSON decoding failures return contextual errors. Listings return an error rather than incomplete results when an item's manifest or metadata cannot be read.
 - `Item.GetContent` reads the item manifest when the item's known entries have no `.content` file, as in a flattened root. A failed manifest download returns its own error, such as a `*StatusError` for a 5xx status, or one for a 401 that also matches `ErrUnauthorized`; it matches `ErrItemNotFound` only when the manifest is missing (a 404 or no schema hash) or lists no `.content` entry.
 
-- When a cache directory is configured via `WithCacheDir`, `GetBlob`, `GetManifest`, and `GetContent` read `$CACHE_DIR/blobs/<hash>` before making network calls. The hash must be 64 lowercase hexadecimal digits, the form of every sync v3 blob address. Any other hash, such as `../../planted.txt` from a damaged or hostile manifest, returns an error matching `ErrInvalidBlobHash` before the cache or the network is touched. `GetBlobFresh` and a client without a cache directory do not check the hash.
-- A cache entry is served only when its bytes match its hash. Files and schema v4 root indexes match the SHA-256 of their bytes. A blob requested under a filename ending in `.docSchema` may instead match the schema v3 rule the tablet uses: the SHA-256 of its records' hashes in record ID order, which covers those hashes and their order but no other record field. An entry that does not match is deleted and downloaded again. A download is cached only when it matches; one that does not is returned uncached, exactly as `GetBlobFresh` returns it.
+- Every blob request (`GetBlob`, `GetBlobFresh`, `GetManifest`, `GetContent`, and the reads inside listing, resolution, and writes) requires a hash of 64 lowercase hexadecimal digits, the form of every sync v3 blob address. Any other hash, such as `../../planted.txt` from a damaged or hostile manifest, returns an error matching `ErrInvalidBlobHash` before any request is sent or the cache is touched, so a manifest can never steer a request URL or a cache path.
+- Every downloaded blob must match the hash it was requested by. Files and schema v4 root indexes match the SHA-256 of their bytes. A blob requested under a filename ending in `.docSchema` may instead match the schema v3 rule the tablet uses: the SHA-256 of its records' hashes in record ID order, which covers those hashes and their order but no other record field. A download that does not match returns an error matching `ErrBlobHashMismatch` and is never cached.
+- When a cache directory is configured via `WithCacheDir`, `GetBlob`, `GetManifest`, and `GetContent` read `$CACHE_DIR/blobs/<hash>` before making network calls; `GetBlobFresh` always downloads. A cache entry is served only when it passes the same check as a download; an entry that does not is deleted and downloaded again.
 - The cache directory and its `blobs` directory are created with mode 0700, and entries are written with mode 0600 through a temporary file renamed into place. An existing `blobs` directory loses its group and other permissions, which also closes entries that earlier versions wrote with mode 0644; an existing cache directory keeps its permissions. Entries are read and replaced only inside `blobs`, never through a symbolic link that leaves it. When the cache cannot be created or secured, reads download without caching.
 - For nested root manifests, `ResolveByID` reads the root state, root manifest, matching item's manifest, and metadata. Other items' metadata is not fetched; cached blobs can avoid download requests. Flattened root manifests use the listing path.
 - `ResolveByName`, `ResolveByPath`, and `Resolve` match exact, case-sensitive visible names among live items: items whose own metadata is neither deleted nor in the trash. A document inside a trashed folder is still live and resolves by name. A path walks down from the root, and every segment but the last matches only folders.
@@ -97,8 +98,8 @@ func main() {
 | `NewClient` | `(opts ...Option) (*Client, error)` | Constructs a reMarkable Cloud client |
 | `Client.GetRootState` | `(ctx context.Context) (*RootState, error)` | Fetches the current root sync generation and schema hash |
 | `Client.GetManifest` | `(ctx context.Context, hash, filename string) (*Manifest, error)` | Downloads and parses schema records for a file hash |
-| `Client.GetBlob` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw blob bytes (hits disk cache if enabled) |
-| `Client.GetBlobFresh` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw bytes directly from storage without reading or writing the disk cache |
+| `Client.GetBlob` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw blob bytes (hits disk cache if enabled) and verifies them against the hash |
+| `Client.GetBlobFresh` | `(ctx context.Context, hash, filename string) ([]byte, error)` | Downloads raw bytes directly from storage without reading or writing the disk cache, and verifies them against the hash |
 | `Client.UpdateDocumentFiles` | `(ctx context.Context, id, expectedHash string, files []FileUpdate) (*UpdateResult, error)` | Adds or replaces named document files; returns progress even when staging, commit, or verification fails |
 | `Client.UpdateDocumentFilesAtRoot` | `(ctx context.Context, opts UpdateDocumentOptions) (*UpdateResult, error)` | Updates files against the caller's root hash and generation; rejects concurrent source or destination changes |
 | `Client.CreateDocument` | `(ctx context.Context, opts CreateDocumentOptions) (*CreateResult, error)` | Creates a separate document using the caller's root snapshot; returns recovery identity and reports progress before the commit |

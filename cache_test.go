@@ -153,16 +153,24 @@ func TestBlobCacheRejectsManifestHashThatEscapesCache(t *testing.T) {
 	rootHash := blobHash(rootBytes)
 	plantedBytes := []byte("3\n# planted outside the cache\n")
 
-	for _, planted := range []bool{false, true} {
-		name := "write"
-		if planted {
-			name = "read"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		cached  bool
+		planted bool
+	}{
+		{"cache write", true, false},
+		{"cache read", true, true},
+		{"request URL without a cache", false, false},
+	} {
+		planted := tt.planted
+		t.Run(tt.name, func(t *testing.T) {
 			base := t.TempDir()
 			// blobs/../../../planted.txt from base/a/b/cache resolves to base/a/planted.txt.
 			cacheDir := filepath.Join(base, "a", "b", "cache")
 			plantedPath := filepath.Join(base, "a", "planted.txt")
+			if !tt.cached {
+				cacheDir = ""
+			}
 			if planted {
 				if err := os.MkdirAll(filepath.Dir(plantedPath), 0700); err != nil {
 					t.Fatal(err)
@@ -194,7 +202,25 @@ func TestBlobCacheRejectsManifestHashThatEscapesCache(t *testing.T) {
 	}
 }
 
-func TestGetBlobRejectsHashesThatAreNotCacheNames(t *testing.T) {
+// blobFetches are the ways to request a blob: through the cache, from a client without a cache
+// directory, and fresh past a configured cache.
+var blobFetches = []struct {
+	name   string
+	cached bool
+	fetch  func(c *cloud.Client, hash, filename string) ([]byte, error)
+}{
+	{"GetBlob with cache", true, func(c *cloud.Client, hash, filename string) ([]byte, error) {
+		return c.GetBlob(context.Background(), hash, filename)
+	}},
+	{"GetBlob without cache", false, func(c *cloud.Client, hash, filename string) ([]byte, error) {
+		return c.GetBlob(context.Background(), hash, filename)
+	}},
+	{"GetBlobFresh", true, func(c *cloud.Client, hash, filename string) ([]byte, error) {
+		return c.GetBlobFresh(context.Background(), hash, filename)
+	}},
+}
+
+func TestBlobRequestsRejectHashesThatAreNotBlobAddresses(t *testing.T) {
 	valid := blobHash([]byte("payload"))
 	for name, hash := range map[string]string{
 		"parent traversal": "../../outside",
@@ -207,21 +233,27 @@ func TestGetBlobRejectsHashesThatAreNotCacheNames(t *testing.T) {
 		"not hex":          "g" + valid[1:],
 		"placeholder":      "sample-hash",
 	} {
-		t.Run(name, func(t *testing.T) {
-			cacheDir := filepath.Join(t.TempDir(), "cache")
-			client, server := newBlobCacheClient(t, cacheDir, "", map[string][]byte{hash: []byte("payload")})
+		for _, fetch := range blobFetches {
+			t.Run(name+"/"+fetch.name, func(t *testing.T) {
+				cacheDir := filepath.Join(t.TempDir(), "cache")
+				clientCache := cacheDir
+				if !fetch.cached {
+					clientCache = ""
+				}
+				client, server := newBlobCacheClient(t, clientCache, "", map[string][]byte{hash: []byte("payload")})
 
-			data, err := client.GetBlob(context.Background(), hash, "doc.pdf")
-			if !errors.Is(err, cloud.ErrInvalidBlobHash) {
-				t.Fatalf("GetBlob(%q) = %q, %v; want ErrInvalidBlobHash", hash, data, err)
-			}
-			if server.total() != 0 {
-				t.Errorf("made %d requests for an invalid hash", server.total())
-			}
-			if _, err := os.Stat(cacheDir); !errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("touched the cache directory for an invalid hash: %v", err)
-			}
-		})
+				data, err := fetch.fetch(client, hash, "doc.pdf")
+				if !errors.Is(err, cloud.ErrInvalidBlobHash) {
+					t.Fatalf("%s(%q) = %q, %v; want ErrInvalidBlobHash", fetch.name, hash, data, err)
+				}
+				if server.total() != 0 {
+					t.Errorf("made %d requests for an invalid hash", server.total())
+				}
+				if _, err := os.Stat(cacheDir); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("touched the cache directory for an invalid hash: %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -347,7 +379,7 @@ func TestBlobCacheRefetchesEntriesThatFailVerification(t *testing.T) {
 	}
 }
 
-func TestBlobCacheStoresOnlyVerifiedDownloads(t *testing.T) {
+func TestBlobDownloadsMustMatchTheirHash(t *testing.T) {
 	fileBytes := []byte("cloud file bytes")
 	pageHash := blobHash([]byte("page"))
 	contentHash := blobHash([]byte("content"))
@@ -363,7 +395,7 @@ func TestBlobCacheStoresOnlyVerifiedDownloads(t *testing.T) {
 		hash     string
 		filename string
 		served   []byte
-		cached   bool
+		matches  bool
 	}{
 		{"file by content hash", blobHash(fileBytes), "doc.pdf", fileBytes, true},
 		{"document schema v3 by entry hashes", schemaHash, "doc.docSchema", schemaBytes, true},
@@ -374,29 +406,38 @@ func TestBlobCacheStoresOnlyVerifiedDownloads(t *testing.T) {
 		{"unparseable document schema", schemaHash, "doc.docSchema", []byte("3\nnot a record\n"), false},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cacheDir := t.TempDir()
-			client, server := newBlobCacheClient(t, cacheDir, "", map[string][]byte{tt.hash: tt.served})
-			ctx := context.Background()
-
-			for range 2 {
-				data, err := client.GetBlob(ctx, tt.hash, tt.filename)
-				if err != nil || string(data) != string(tt.served) {
-					t.Fatalf("GetBlob = %q, %v; want the served bytes %q", data, err, tt.served)
+		for _, fetch := range blobFetches {
+			t.Run(tt.name+"/"+fetch.name, func(t *testing.T) {
+				cacheDir := t.TempDir()
+				clientCache := cacheDir
+				if !fetch.cached {
+					clientCache = ""
 				}
-			}
-			wantRequests := 2
-			if tt.cached {
-				wantRequests = 1
-			}
-			if n := server.count(tt.hash); n != wantRequests {
-				t.Errorf("downloaded %d times, want %d", n, wantRequests)
-			}
-			_, err := os.Stat(filepath.Join(cacheDir, "blobs", tt.hash))
-			if tt.cached != (err == nil) {
-				t.Errorf("cache entry present = %v, want %v (%v)", err == nil, tt.cached, err)
-			}
-		})
+				client, server := newBlobCacheClient(t, clientCache, "", map[string][]byte{tt.hash: tt.served})
+
+				for range 2 {
+					data, err := fetch.fetch(client, tt.hash, tt.filename)
+					switch {
+					case tt.matches && (err != nil || string(data) != string(tt.served)):
+						t.Fatalf("%s = %q, %v; want the served bytes %q", fetch.name, data, err, tt.served)
+					case !tt.matches && (data != nil || !errors.Is(err, cloud.ErrBlobHashMismatch)):
+						t.Fatalf("%s = %q, %v; want ErrBlobHashMismatch", fetch.name, data, err)
+					}
+				}
+				cached := tt.matches && fetch.name == "GetBlob with cache"
+				wantRequests := 2
+				if cached {
+					wantRequests = 1
+				}
+				if n := server.count(tt.hash); n != wantRequests {
+					t.Errorf("downloaded %d times, want %d", n, wantRequests)
+				}
+				_, err := os.Stat(filepath.Join(cacheDir, "blobs", tt.hash))
+				if cached != (err == nil) {
+					t.Errorf("cache entry present = %v, want %v (%v)", err == nil, cached, err)
+				}
+			})
+		}
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	cloud "github.com/alexgorbatchev/go-remarkable-cloud"
@@ -14,66 +13,37 @@ import (
 func setupResolverMockServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
+	blobs := blobFixtures{}
+	metaWork := blobs.add(`{"visibleName": "Work", "type": "CollectionType", "parent": "", "deleted": false}`)
+	metaProj := blobs.add(`{"visibleName": "Projects", "type": "CollectionType", "parent": "folder-work", "deleted": false}`)
+	metaDaily := blobs.add(`{"visibleName": "2026 - Daily", "type": "DocumentType", "parent": "folder-proj", "deleted": false}`)
+	metaDeleted := blobs.add(`{"visibleName": "Old Trash", "type": "DocumentType", "parent": "", "deleted": true}`)
+	metaInbox := blobs.add(`{"visibleName": "Inbox Note", "type": "DocumentType", "parent": "", "deleted": false}`)
+	contentDaily := blobs.add(`{"fileType": "pdf", "pageCount": 42}`)
+	schemaDaily := blobs.manifest(
+		metaDaily+":doc-daily.metadata:0:100",
+		contentDaily+":doc-daily.content:0:300",
+		unpublished("pdf-daily")+":doc-daily.pdf:0:100000",
+	)
+	root := blobs.manifest(
+		metaWork+":folder-work.metadata:0:100",
+		unpublished("schema-work")+":folder-work.docSchema:0:200",
+		metaProj+":folder-proj.metadata:0:100",
+		unpublished("schema-proj")+":folder-proj.docSchema:0:200",
+		metaDaily+":doc-daily.metadata:0:100",
+		schemaDaily+":doc-daily.docSchema:0:200",
+		contentDaily+":doc-daily.content:0:300",
+		metaDeleted+":doc-deleted.metadata:0:100",
+		metaInbox+":doc-inbox.metadata:0:100",
+	)
+
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		filename := r.Header.Get("rm-filename")
-
-		switch path {
-		case "/sync/v3/root":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"hash": "root-hash", "generation": 10, "schemaVersion": 3}`))
-
-		case "/sync/v3/files/root-hash":
-			// Root manifest lines
-			lines := []string{
-				"meta-work:folder-work.metadata:0:100",
-				"schema-work:folder-work.docSchema:0:200",
-				"meta-proj:folder-proj.metadata:0:100",
-				"schema-proj:folder-proj.docSchema:0:200",
-				"meta-daily:doc-daily.metadata:0:100",
-				"schema-daily:doc-daily.docSchema:0:200",
-				"content-daily:doc-daily.content:0:300",
-				"meta-deleted:doc-deleted.metadata:0:100",
-				"meta-inbox:doc-inbox.metadata:0:100",
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))
-
-		case "/sync/v3/files/schema-daily":
-			lines := []string{
-				"meta-daily:doc-daily.metadata:0:100",
-				"content-daily:doc-daily.content:0:300",
-				"pdf-daily:doc-daily.pdf:0:100000",
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))
-
-		case "/sync/v3/files/meta-work":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Work", "type": "CollectionType", "parent": "", "deleted": false}`))
-
-		case "/sync/v3/files/meta-proj":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Projects", "type": "CollectionType", "parent": "folder-work", "deleted": false}`))
-
-		case "/sync/v3/files/meta-daily":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "2026 - Daily", "type": "DocumentType", "parent": "folder-proj", "deleted": false}`))
-
-		case "/sync/v3/files/meta-deleted":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Old Trash", "type": "DocumentType", "parent": "", "deleted": true}`))
-
-		case "/sync/v3/files/meta-inbox":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Inbox Note", "type": "DocumentType", "parent": "", "deleted": false}`))
-
-		case "/sync/v3/files/content-daily":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"fileType": "pdf", "pageCount": 42}`))
-
-		default:
-			t.Logf("unhandled mock path: %s (filename: %s)", path, filename)
+		if r.URL.Path == "/sync/v3/root" {
+			_, _ = w.Write([]byte(`{"hash": "` + root + `", "generation": 10, "schemaVersion": 3}`))
+			return
+		}
+		if !blobs.serve(w, r) {
+			t.Logf("unhandled mock path: %s (filename: %s)", r.URL.Path, r.Header.Get("rm-filename"))
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))

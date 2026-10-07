@@ -90,20 +90,20 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 	}
 
 	// 6. Fast ResolveByID with mock server
+	blobs := blobFixtures{}
+	metaHash := blobs.add(`{"visibleName":"Target Note","type":"DocumentType"}`)
+	docHash := blobs.manifest(metaHash + ":doc-target.metadata:0:50")
+	rootHash := blobs.manifest(docHash + ":doc-target:0:100")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token/v2/user":
 			_, _ = w.Write([]byte("mock-token"))
 		case "/sync/v3/root":
-			_, _ = w.Write([]byte(`{"hash":"root-hash","generation":1,"schemaVersion":3}`))
-		case "/sync/v3/files/root-hash":
-			_, _ = w.Write([]byte("doc-hash:doc-target:0:100\n"))
-		case "/sync/v3/files/doc-hash":
-			_, _ = w.Write([]byte("meta-hash:doc-target.metadata:0:50\n"))
-		case "/sync/v3/files/meta-hash":
-			_, _ = w.Write([]byte(`{"visibleName":"Target Note","type":"DocumentType"}`))
+			_, _ = w.Write([]byte(`{"hash":"` + rootHash + `","generation":1,"schemaVersion":3}`))
 		default:
-			w.WriteHeader(http.StatusNotFound)
+			if !blobs.serve(w, r) {
+				w.WriteHeader(http.StatusNotFound)
+			}
 		}
 	}))
 	defer ts.Close()
@@ -166,9 +166,9 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 		cloud.WithEndpoints(&cloud.Endpoints{WebappHost: tsContent.URL, StorageHost: tsContent.URL}),
 	)
 	var targetMap map[string]any
-	errBadJSON := clientContent.GetContent(ctx, "any-hash", "file", &targetMap)
-	if errBadJSON == nil {
-		t.Error("expected error on bad json in GetContent")
+	errBadJSON := clientContent.GetContent(ctx, blobHash([]byte("not valid json")), "file", &targetMap)
+	if errBadJSON == nil || !strings.Contains(errBadJSON.Error(), "unmarshal content (file)") {
+		t.Errorf("expected unmarshal error on bad json in GetContent, got %v", errBadJSON)
 	}
 
 	// 9. RenewUserToken 500 error
@@ -188,9 +188,9 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 	}
 
 	// 10. GetDocumentContent 404
-	_, errDoc404 := client.GetDocumentContent(ctx, "nonexistent-hash", "nonexistent-file")
-	if errDoc404 == nil {
-		t.Error("expected error on 404 in GetDocumentContent")
+	_, errDoc404 := client.GetDocumentContent(ctx, unpublished("nonexistent"), "nonexistent-file")
+	if !errors.Is(errDoc404, cloud.ErrItemNotFound) {
+		t.Errorf("expected ErrItemNotFound on 404 in GetDocumentContent, got %v", errDoc404)
 	}
 }
 

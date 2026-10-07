@@ -137,27 +137,31 @@ func ReadConfigFile(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// WriteConfigFile writes the configuration to disk with restricted permissions (0600).
+// WriteConfigFile writes the configuration to disk with restricted permissions (0600). It writes a
+// new temporary file with a unique name in the same directory and renames it over path, so readers
+// and concurrent writers never see a partial file. The temporary file, which holds the tokens, is
+// removed on every failure.
 func WriteConfigFile(path string, cfg *Config) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	tmpFile := path + ".tmp"
-	f, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// os.CreateTemp creates the file with mode 0600.
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if err := WriteConfig(f, cfg); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmpFile)
-		return err
+	err = WriteConfig(f, cfg)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpFile)
-		return err
+	if err == nil {
+		err = os.Rename(f.Name(), path)
 	}
-	return os.Rename(tmpFile, path)
+	if err != nil {
+		_ = os.Remove(f.Name()) // the write, close, or rename error is returned
+	}
+	return err
 }
 
 // LoadConfig resolves the configuration file path and loads it.

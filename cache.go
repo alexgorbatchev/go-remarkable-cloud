@@ -25,8 +25,8 @@ const (
 )
 
 // validateBlobHash rejects a hash that is not 64 lowercase hexadecimal digits, the form of every
-// sync v3 blob address. Only a valid hash names a cache entry, so no hash a manifest carries can
-// address a path outside the cache directory.
+// sync v3 blob address. Only a valid hash reaches a request URL or names a cache entry, so no hash a
+// manifest carries can address another endpoint or a path outside the cache directory.
 func validateBlobHash(hash string) error {
 	valid := len(hash) == 2*sha256.Size
 	for i := 0; valid && i < len(hash); i++ {

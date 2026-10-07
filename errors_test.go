@@ -71,7 +71,9 @@ const (
 	rootPath  = "/sync/v3/root"
 	renewPath = "/token/json/2/user/new"
 	pairPath  = "/token/json/2/device/new"
-	blobPath  = "/sync/v3/files/blob-hash"
+	// blobAddr is a valid blob address that the canned routes answer with a failure status.
+	blobAddr = "fa2c8cc4f28176bbeed4b736df569a34c79cd3723e9ec42f9674b4d46ac6b8b8"
+	blobPath = "/sync/v3/files/" + blobAddr
 	// malformedTokenBody is the body the sync storage service sends with status 400 for a bearer
 	// token it cannot parse.
 	malformedTokenBody = `{"message":"token is malformed"}`
@@ -168,36 +170,36 @@ func TestStatusErrorClassification(t *testing.T) {
 			name: "GetBlob 500",
 			call: func(t *testing.T) error {
 				c := newCannedClient(t, map[string]cannedResponse{blobPath: {http.StatusInternalServerError, "storage failure"}}, userToken)
-				_, err := c.GetBlob(context.Background(), "blob-hash", "doc.pdf")
+				_, err := c.GetBlob(context.Background(), blobAddr, "doc.pdf")
 				return err
 			},
 			wantStatus: http.StatusInternalServerError,
 			wantBody:   "storage failure",
-			wantText:   "get blob blob-hash (doc.pdf) failed with status 500: storage failure",
+			wantText:   "get blob " + blobAddr + " (doc.pdf) failed with status 500: storage failure",
 		},
 		{
 			name: "GetBlobFresh 404",
 			call: func(t *testing.T) error {
 				c := newCannedClient(t, map[string]cannedResponse{blobPath: {http.StatusNotFound, "no such object"}}, userToken)
-				_, err := c.GetBlobFresh(context.Background(), "blob-hash", "doc.pdf")
+				_, err := c.GetBlobFresh(context.Background(), blobAddr, "doc.pdf")
 				return err
 			},
 			wantStatus: http.StatusNotFound,
 			wantBody:   "no such object",
 			sentinel:   cloud.ErrItemNotFound,
-			wantText:   "item not found: get blob blob-hash (doc.pdf) failed with status 404: no such object",
+			wantText:   "item not found: get blob " + blobAddr + " (doc.pdf) failed with status 404: no such object",
 		},
 		{
 			name: "GetManifest 403 without renewal",
 			call: func(t *testing.T) error {
 				c := newCannedClient(t, map[string]cannedResponse{blobPath: {http.StatusForbidden, "denied"}}, userToken, cloud.WithAutoRenew(false))
-				_, err := c.GetManifest(context.Background(), "blob-hash", "root")
+				_, err := c.GetManifest(context.Background(), blobAddr, "root")
 				return err
 			},
 			wantStatus: http.StatusForbidden,
 			wantBody:   "denied",
 			sentinel:   cloud.ErrUnauthorized,
-			wantText:   "unauthorized: missing or invalid credentials: get blob blob-hash (root.docSchema) failed with status 403: denied",
+			wantText:   "unauthorized: missing or invalid credentials: get blob " + blobAddr + " (root.docSchema) failed with status 403: denied",
 		},
 		{
 			name: "RenewToken 500",

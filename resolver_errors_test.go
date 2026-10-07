@@ -19,38 +19,35 @@ func TestResolverMetadataErrors(t *testing.T) {
 			}
 			for _, operation := range []string{"list", "id", "resolve", "name", "path"} {
 				t.Run(layout+"/"+failure+"/"+operation, func(t *testing.T) {
+					blobs := blobFixtures{}
+					meta := blobs.add(`{"visibleName":`)
+					schema := blobs.manifest(meta + ":doc.metadata:0:1")
+					root := blobs.manifest(schema + ":doc:0:1")
+					if layout == "flat" {
+						root = blobs.manifest(meta + ":doc.metadata:0:1")
+					}
 					s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						switch r.URL.Path {
 						case "/sync/v3/root":
-							if _, err := w.Write([]byte(`{"hash":"root"}`)); err != nil {
+							if _, err := w.Write([]byte(`{"hash":"` + root + `"}`)); err != nil {
 								t.Error(err)
 							}
-						case "/sync/v3/files/root":
-							line := "schema:doc:0:1\n"
-							if layout == "flat" {
-								line = "meta:doc.metadata:0:1\n"
-							}
-							if _, err := w.Write([]byte(line)); err != nil {
-								t.Error(err)
-							}
-						case "/sync/v3/files/schema":
+						case "/sync/v3/files/" + schema:
 							if failure == "manifest" {
 								w.WriteHeader(http.StatusServiceUnavailable)
 								return
 							}
-							if _, err := w.Write([]byte("meta:doc.metadata:0:1\n")); err != nil {
-								t.Error(err)
-							}
-						case "/sync/v3/files/meta":
+							blobs.serve(w, r)
+						case "/sync/v3/files/" + meta:
 							if failure == "download" {
 								w.WriteHeader(http.StatusServiceUnavailable)
 								return
 							}
-							if _, err := w.Write([]byte(`{"visibleName":`)); err != nil {
-								t.Error(err)
-							}
+							blobs.serve(w, r)
 						default:
-							w.WriteHeader(http.StatusNotFound)
+							if !blobs.serve(w, r) {
+								w.WriteHeader(http.StatusNotFound)
+							}
 						}
 					}))
 					defer s.Close()
@@ -85,6 +82,14 @@ func TestResolverMetadataErrors(t *testing.T) {
 // the item manifest. A failed manifest download keeps its own classification; only a manifest that
 // was read and lists no .content reports ErrItemNotFound.
 func TestItemGetContentManifestFailure(t *testing.T) {
+	// The item manifest is published under the address of the readable answer; the failing answers
+	// replace it at the same address. wantText spells that address as <schema>.
+	schemaBody := "3\n" + unpublished("pdf") + ":0:doc.pdf:0:1\n"
+	schema := blobHash([]byte(schemaBody))
+	metaBody := `{"visibleName":"Doc","type":"DocumentType","parent":""}`
+	meta := blobHash([]byte(metaBody))
+	rootBody := "3\n" + schema + ":0:doc.docSchema:0:1\n" + meta + ":0:doc.metadata:0:1\n"
+	root := blobHash([]byte(rootBody))
 	tests := []struct {
 		name     string
 		schema   cannedResponse
@@ -96,25 +101,25 @@ func TestItemGetContentManifestFailure(t *testing.T) {
 			name:     "manifest 502",
 			schema:   cannedResponse{http.StatusBadGateway, "upstream unavailable"},
 			status:   http.StatusBadGateway,
-			wantText: "get manifest for content of doc: get blob schema (doc.docSchema) failed with status 502: upstream unavailable",
+			wantText: "get manifest for content of doc: get blob <schema> (doc.docSchema) failed with status 502: upstream unavailable",
 		},
 		{
 			name:     "manifest 401",
 			schema:   cannedResponse{http.StatusUnauthorized, "expired"},
 			status:   http.StatusUnauthorized,
 			sentinel: cloud.ErrUnauthorized,
-			wantText: "get manifest for content of doc: unauthorized: missing or invalid credentials: get blob schema (doc.docSchema) failed with status 401: expired",
+			wantText: "get manifest for content of doc: unauthorized: missing or invalid credentials: get blob <schema> (doc.docSchema) failed with status 401: expired",
 		},
 		{
 			name:     "manifest 404",
 			schema:   cannedResponse{http.StatusNotFound, "gone"},
 			status:   http.StatusNotFound,
 			sentinel: cloud.ErrItemNotFound,
-			wantText: "get manifest for content of doc: item not found: get blob schema (doc.docSchema) failed with status 404: gone",
+			wantText: "get manifest for content of doc: item not found: get blob <schema> (doc.docSchema) failed with status 404: gone",
 		},
 		{
 			name:     "manifest without content",
-			schema:   cannedResponse{http.StatusOK, "3\npdf:0:doc.pdf:0:1\n"},
+			schema:   cannedResponse{http.StatusOK, schemaBody},
 			sentinel: cloud.ErrItemNotFound,
 			wantText: "item not found: content entry not found for item doc",
 		},
@@ -122,10 +127,10 @@ func TestItemGetContentManifestFailure(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := newCannedClient(t, map[string]cannedResponse{
-				rootPath:                {http.StatusOK, `{"hash":"root","generation":1}`},
-				"/sync/v3/files/root":   {http.StatusOK, "3\nschema:0:doc.docSchema:0:1\nmeta:0:doc.metadata:0:1\n"},
-				"/sync/v3/files/meta":   {http.StatusOK, `{"visibleName":"Doc","type":"DocumentType","parent":""}`},
-				"/sync/v3/files/schema": tt.schema,
+				rootPath:                   {http.StatusOK, `{"hash":"` + root + `","generation":1}`},
+				"/sync/v3/files/" + root:   {http.StatusOK, rootBody},
+				"/sync/v3/files/" + meta:   {http.StatusOK, metaBody},
+				"/sync/v3/files/" + schema: tt.schema,
 			}, cloud.Config{UserToken: "user-token"}, cloud.WithAutoRenew(false))
 			items, err := c.ListItems(context.Background())
 			if err != nil || len(items) != 1 || items[0].ID != "doc" {
@@ -141,8 +146,8 @@ func TestItemGetContentManifestFailure(t *testing.T) {
 					t.Fatalf("errors.Is(err, %q) = %v, want %v (err: %v)", sentinel, got, want, err)
 				}
 			}
-			if err.Error() != tt.wantText {
-				t.Fatalf("error text mismatch\n got: %q\nwant: %q", err.Error(), tt.wantText)
+			if want := strings.ReplaceAll(tt.wantText, "<schema>", schema); err.Error() != want {
+				t.Fatalf("error text mismatch\n got: %q\nwant: %q", err.Error(), want)
 			}
 		})
 	}

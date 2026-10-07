@@ -393,16 +393,16 @@ func (c *Client) GetBlobFresh(ctx context.Context, hash, filename string) ([]byt
 	return c.getBlob(ctx, hash, filename, false)
 }
 
-// getBlob returns the blob for hash. With cache set and a cache directory configured, it rejects a
-// hash that cannot name a cache entry, serves an entry only after verifying it against hash, and
-// stores a download only when it verifies; a download that does not verify is returned uncached,
-// exactly as GetBlobFresh returns it.
+// getBlob returns the blob for hash. It rejects a hash that is not a blob address before any request
+// or cache access, so a manifest cannot inject a path into the request URL or the cache. With cache
+// set and a cache directory configured, it serves an entry only after verifying it against hash and
+// stores downloads, which downloadBlob has already verified.
 func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool) ([]byte, error) {
-	if !cache || c.cacheDir == "" {
-		return c.downloadBlob(ctx, hash, filename)
-	}
 	if err := validateBlobHash(hash); err != nil {
 		return nil, err
+	}
+	if !cache || c.cacheDir == "" {
+		return c.downloadBlob(ctx, hash, filename)
 	}
 	blobs, err := c.openBlobCache()
 	if err != nil {
@@ -418,14 +418,14 @@ func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool)
 	if err != nil {
 		return nil, err
 	}
-	if blobMatchesHash(hash, filename, data) {
-		// A failed write only costs a later download; the caller already has the verified bytes.
-		_ = writeCachedBlob(blobs, hash, data)
-	}
+	// A failed write only costs a later download; the caller already has the verified bytes.
+	_ = writeCachedBlob(blobs, hash, data)
 	return data, nil
 }
 
-// downloadBlob fetches the blob for hash from cloud storage.
+// downloadBlob fetches the blob for hash from cloud storage and returns ErrBlobHashMismatch when the
+// bytes are not the blob hash addresses. There is no other copy to fall back on, and bytes that do
+// not match the requested address are not the requested data.
 func (c *Client) downloadBlob(ctx context.Context, hash, filename string) ([]byte, error) {
 	url := fmt.Sprintf("%s/sync/v3/files/%s", strings.TrimRight(c.endpoints.StorageHost, "/"), hash)
 
@@ -457,7 +457,9 @@ func (c *Client) downloadBlob(ctx context.Context, hash, filename string) ([]byt
 	if err != nil {
 		return nil, err
 	}
-
+	if !blobMatchesHash(hash, filename, data) {
+		return nil, fmt.Errorf("%w: get blob %s (%s)", ErrBlobHashMismatch, hash, filename)
+	}
 	return data, nil
 }
 
