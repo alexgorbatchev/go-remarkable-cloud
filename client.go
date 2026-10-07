@@ -250,29 +250,18 @@ func (c *Client) executeWithAuth(ctx context.Context, makeReq func(userToken str
 	return c.httpClient.Do(retryReq)
 }
 
-// malformedTokenMessage is the message field of the JSON body the sync storage service sends with
-// status 400 for a bearer token it cannot parse.
-const malformedTokenMessage = "token is malformed"
-
-// tokenRefused reports whether resp refused the request's user token: any 401 or 403, or a 400 whose
-// body is the storage service's malformed-token message. Every other 400 rejects the request itself,
-// so renewing the token and replaying the request could not change the answer. A 400 body stays
-// readable for the caller.
+// tokenRefused reports whether resp refused the request's user token, as credentialsRefused decides.
+// Renewing the token and replaying any other rejected request could not change the answer. Only a
+// 400 body is read, and it stays readable for the caller.
 func tokenRefused(resp *http.Response) bool {
-	switch resp.StatusCode {
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return true
-	case http.StatusBadRequest:
-		// A failed read leaves a partial body that cannot match; the caller reports the 400 itself.
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		var reply struct {
-			Message string `json:"message"`
-		}
-		return json.Unmarshal(body, &reply) == nil && reply.Message == malformedTokenMessage
+	if resp.StatusCode != http.StatusBadRequest {
+		return credentialsRefused(resp.StatusCode, nil)
 	}
-	return false
+	// A failed read leaves a partial body that cannot match; the caller reports the 400 itself.
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return credentialsRefused(resp.StatusCode, body)
 }
 
 // renewalError reports that the server refused a request's user token with status and that minting a

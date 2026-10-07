@@ -106,6 +106,13 @@ func TestItemGetContentManifestFailure(t *testing.T) {
 			wantText: "get manifest for content of doc: unauthorized: missing or invalid credentials: get blob schema (doc.docSchema) failed with status 401: expired",
 		},
 		{
+			name:     "manifest 404",
+			schema:   cannedResponse{http.StatusNotFound, "gone"},
+			status:   http.StatusNotFound,
+			sentinel: cloud.ErrItemNotFound,
+			wantText: "get manifest for content of doc: item not found: get blob schema (doc.docSchema) failed with status 404: gone",
+		},
+		{
 			name:     "manifest without content",
 			schema:   cannedResponse{http.StatusOK, "3\npdf:0:doc.pdf:0:1\n"},
 			sentinel: cloud.ErrItemNotFound,

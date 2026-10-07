@@ -1,6 +1,7 @@
 package cloud
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,8 @@ var (
 // Callers read the status with errors.As. When the status has a domain meaning, Err holds the
 // matching sentinel so errors.Is also reports it: ErrItemNotFound for a missing blob,
 // ErrGenerationConflict for a 409 or 412 root commit, ErrDiscoveryFailed for every discovery
-// status including 401 and 403, and ErrUnauthorized for 401 and 403 from every other request.
+// status including 401 and 403, and ErrUnauthorized for refused credentials from every other
+// request: a 401, a 403, or a 400 whose JSON message is "token is malformed".
 type StatusError struct {
 	// Op names the request that failed, such as "get root state".
 	Op string
@@ -120,13 +122,33 @@ func (e *AmbiguousNameError) Unwrap() error {
 	return ErrAmbiguousName
 }
 
-// newStatusError classifies a rejected response; 401 and 403 always mean the credentials were refused.
+// newStatusError classifies a rejected response; a refused credential matches ErrUnauthorized.
 func newStatusError(op string, statusCode int, body []byte) *StatusError {
 	e := &StatusError{Op: op, StatusCode: statusCode, Body: string(body)}
-	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+	if credentialsRefused(statusCode, body) {
 		e.Err = ErrUnauthorized
 	}
 	return e
+}
+
+// malformedTokenMessage is the message field of the JSON body the sync storage service sends with
+// status 400 for a bearer token it cannot parse.
+const malformedTokenMessage = "token is malformed"
+
+// credentialsRefused reports whether a response refused the request's credentials: any 401 or 403,
+// or a 400 whose body is the storage service's malformed-token message. Every other 400 rejects the
+// request itself.
+func credentialsRefused(statusCode int, body []byte) bool {
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	case http.StatusBadRequest:
+		var reply struct {
+			Message string `json:"message"`
+		}
+		return json.Unmarshal(body, &reply) == nil && reply.Message == malformedTokenMessage
+	}
+	return false
 }
 
 // readStatusError reads the rejected response body and classifies the response.

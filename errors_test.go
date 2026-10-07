@@ -72,6 +72,9 @@ const (
 	renewPath = "/token/json/2/user/new"
 	pairPath  = "/token/json/2/device/new"
 	blobPath  = "/sync/v3/files/blob-hash"
+	// malformedTokenBody is the body the sync storage service sends with status 400 for a bearer
+	// token it cannot parse.
+	malformedTokenBody = `{"message":"token is malformed"}`
 )
 
 func TestStatusErrorClassification(t *testing.T) {
@@ -122,6 +125,44 @@ func TestStatusErrorClassification(t *testing.T) {
 			wantBody:   "forbidden",
 			sentinel:   cloud.ErrUnauthorized,
 			wantText:   "unauthorized: missing or invalid credentials: get root state failed with status 403: forbidden",
+		},
+		{
+			name: "GetRootState malformed-token 400 without renewal",
+			call: func(t *testing.T) error {
+				c := newCannedClient(t, map[string]cannedResponse{rootPath: {http.StatusBadRequest, malformedTokenBody}}, userToken, cloud.WithAutoRenew(false))
+				_, err := c.GetRootState(context.Background())
+				return err
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   malformedTokenBody,
+			sentinel:   cloud.ErrUnauthorized,
+			wantText:   "unauthorized: missing or invalid credentials: get root state failed with status 400: " + malformedTokenBody,
+		},
+		{
+			name: "GetRootState malformed-token 400 after successful renewal",
+			call: func(t *testing.T) error {
+				c := newCannedClient(t, map[string]cannedResponse{
+					rootPath:  {http.StatusBadRequest, malformedTokenBody},
+					renewPath: {http.StatusOK, "renewed-user-token"},
+				}, cloud.Config{DeviceToken: "device-token", UserToken: "stale-user-token"})
+				_, err := c.GetRootState(context.Background())
+				return err
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   malformedTokenBody,
+			sentinel:   cloud.ErrUnauthorized,
+			wantText:   "unauthorized: missing or invalid credentials: get root state failed with status 400: " + malformedTokenBody,
+		},
+		{
+			name: "GetRootState 400 mentioning token",
+			call: func(t *testing.T) error {
+				c := newCannedClient(t, map[string]cannedResponse{rootPath: {http.StatusBadRequest, `{"message":"invalid rm-filename token"}`}}, userToken)
+				_, err := c.GetRootState(context.Background())
+				return err
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"message":"invalid rm-filename token"}`,
+			wantText:   `get root state failed with status 400: {"message":"invalid rm-filename token"}`,
 		},
 		{
 			name: "GetBlob 500",

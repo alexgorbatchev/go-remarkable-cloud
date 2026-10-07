@@ -40,7 +40,8 @@ const (
 	// failed, or the server refused the commit with a 4xx status. Staged blobs stay unreferenced.
 	UpdateStaged UpdateState = "staged"
 	// UpdateCommitUnknown means the root commit was sent without a definite answer: no response, a
-	// 5xx status, or a 200 that did not confirm the new root. Inspect fresh cloud state before retrying.
+	// non-200 status that is not a 4xx, or a 200 that did not confirm the new root. Inspect fresh cloud
+	// state before retrying.
 	UpdateCommitUnknown UpdateState = "commit-unknown"
 	// UpdateCommitted means the server confirmed the root commit but the operation did not complete.
 	UpdateCommitted UpdateState = "committed"
@@ -356,8 +357,9 @@ func (c *Client) putVerifiedBlob(ctx context.Context, hash, name string, data []
 
 // commitRoot sends the generation-checked root commit and returns the state it leaves the write in.
 // A 4xx answer, including a refused token whose renewal fails before any replay, means the server
-// applied nothing, so the write stays UpdateStaged. A missing answer, a 5xx, or a 200 that does not
-// confirm the new root leaves UpdateCommitUnknown; a confirmed commit returns UpdateCommitted.
+// applied nothing, so the write stays UpdateStaged. A missing answer, any other non-200 status, or a
+// 200 that does not confirm the new root leaves UpdateCommitUnknown; a confirmed commit returns
+// UpdateCommitted.
 func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) (UpdateState, error) {
 	data, err := json.Marshal(struct {
 		Hash       string `json:"hash"`

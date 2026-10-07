@@ -40,6 +40,7 @@ var commitResponses = map[string][]cannedResponse{
 	"commit-401-renew-fails": {{http.StatusUnauthorized, "expired"}},
 	"commit-403":             {{http.StatusForbidden, "forbidden"}, {http.StatusForbidden, "forbidden"}},
 	"commit-400":             {{http.StatusBadRequest, `{"message":"invalid rm-filename token"}`}},
+	"commit-400-malformed":   {{http.StatusBadRequest, malformedTokenBody}, {http.StatusBadRequest, malformedTokenBody}},
 	"commit-401-then-503":    {{http.StatusUnauthorized, "expired"}, {http.StatusServiceUnavailable, "commit unavailable"}},
 }
 
@@ -308,6 +309,11 @@ func TestCreateDocumentCommitOutcome(t *testing.T) {
 			failure: "commit-400", state: cloud.UpdateStaged, op: "commit root", status: http.StatusBadRequest,
 			commits: 1, renewals: 0,
 			wantText: `commit root failed with status 400: {"message":"invalid rm-filename token"}`,
+		},
+		{
+			failure: "commit-400-malformed", state: cloud.UpdateStaged, op: "commit root", status: http.StatusBadRequest,
+			sentinel: cloud.ErrUnauthorized, commits: 2, renewals: 1,
+			wantText: "unauthorized: missing or invalid credentials: commit root failed with status 400: " + malformedTokenBody,
 		},
 		{
 			failure: "conflict", state: cloud.UpdateStaged, op: "commit root", status: http.StatusPreconditionFailed,
