@@ -223,6 +223,18 @@ func TestStatusErrorClassification(t *testing.T) {
 			wantText:   "unauthorized: missing or invalid credentials: renew user token failed with status 401: invalid Authorization header",
 		},
 		{
+			name: "RenewUserToken malformed-token 400",
+			call: func(t *testing.T) error {
+				server := newCannedServer(t, map[string]cannedResponse{renewPath: {http.StatusBadRequest, malformedTokenBody}})
+				_, err := cloud.RenewUserToken(context.Background(), server.Client(), server.URL, "device-token")
+				return err
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   malformedTokenBody,
+			sentinel:   cloud.ErrUnauthorized,
+			wantText:   "unauthorized: missing or invalid credentials: renew user token failed with status 400: " + malformedTokenBody,
+		},
+		{
 			name: "GetRootState minting a user token against 502",
 			call: func(t *testing.T) error {
 				c := newCannedClient(t, map[string]cannedResponse{renewPath: {http.StatusBadGateway, "gateway"}}, deviceToken)
