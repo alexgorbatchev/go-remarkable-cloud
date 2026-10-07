@@ -83,16 +83,22 @@ func (c *Client) openBlobCache() (*os.Root, error) {
 	return blobs, nil
 }
 
-// readCachedBlob returns the cache entry for hash when its bytes are the blob hash addresses. It
-// removes an entry that fails verification, so a corrupted or replaced entry is downloaded again.
-// An entry that cannot be read, including a symbolic link out of the cache, is a miss that the
-// verified download replaces.
-func readCachedBlob(blobs *os.Root, hash, filename string) ([]byte, bool) {
-	data, err := blobs.ReadFile(hash)
+// readCachedBlob returns the cache entry for hash when it holds at most limit bytes and its bytes are
+// the blob hash addresses; it reads no more than one byte past limit. It removes an entry that fails
+// either check, so a corrupted, replaced, or oversized entry is downloaded again. An entry that
+// cannot be read, including a symbolic link out of the cache, is a miss that the verified download
+// replaces.
+func readCachedBlob(blobs *os.Root, hash, filename string, limit int64) ([]byte, bool) {
+	f, err := blobs.Open(hash)
 	if err != nil {
 		return nil, false
 	}
-	if blobMatchesHash(hash, filename, data) {
+	data, tooLarge, err := readAtMost(f, limit)
+	_ = f.Close() // the entry was read or is treated as a miss below
+	if err != nil {
+		return nil, false
+	}
+	if !tooLarge && blobMatchesHash(hash, filename, data) {
 		return data, true
 	}
 	_ = blobs.Remove(hash) // a failed removal leaves an entry that the next download replaces

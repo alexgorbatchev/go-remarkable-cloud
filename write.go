@@ -246,7 +246,7 @@ func (c *Client) verifyDocumentFiles(ctx context.Context, id, docHash string, fi
 		if entry == nil || entry.Hash != contentHash(file.Data) {
 			return fmt.Errorf("verifying association for %s", file.Name)
 		}
-		data, err := c.GetBlobFresh(ctx, entry.Hash, file.Name)
+		data, err := c.GetFileFresh(ctx, *entry)
 		if err != nil {
 			return err
 		}
@@ -364,7 +364,8 @@ func (c *Client) putVerifiedBlob(ctx context.Context, hash, name string, data []
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusAccepted {
 		return readStatusError("upload "+name, resp)
 	}
-	downloaded, err := c.GetBlobFresh(ctx, hash, name)
+	// The staged bytes must come back whole, so nothing longer than them is read.
+	downloaded, err := c.getBlob(ctx, hash, name, int64(len(data)), false)
 	if err != nil {
 		return err
 	}

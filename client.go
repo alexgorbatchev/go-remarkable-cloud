@@ -96,6 +96,21 @@ func WithDefaultConfigFile() Option {
 	}
 }
 
+// MaxBlobSize is the default limit, 1 GiB, on a blob read without a listed size: GetBlob,
+// GetBlobFresh, GetManifest, GetContent, and the index reads inside listing, resolution, and writes.
+// It is ten times the 100 MB that the reMarkable web app uploads, a limit the companion apps can
+// exceed, so it bounds memory without rejecting a real document. GetFile reads at most the size a
+// document index lists, capped at the same limit.
+const MaxBlobSize int64 = 1 << 30
+
+// WithBlobSizeLimit sets the limit on a blob read without a listed size, and the cap on the size a
+// document index lists, in place of MaxBlobSize. A longer blob returns ErrResponseTooLarge.
+func WithBlobSizeLimit(limit int64) Option {
+	return func(c *Client) {
+		c.blobSizeLimit = limit
+	}
+}
+
 // WithCacheDir configures a local directory for caching content-addressed blobs by hash.
 func WithCacheDir(dir string) Option {
 	return func(c *Client) {
@@ -116,6 +131,7 @@ type Client struct {
 	saveOnRenew       bool
 	cacheDir          string
 	saveErrorHandler  func(err error)
+	blobSizeLimit     int64
 }
 
 // NewClient creates a new Client configured with the provided options. It returns an error when the
@@ -128,10 +144,11 @@ func NewClient(opts ...Option) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		endpoints:   DefaultEndpoints(),
-		authBaseURL: DefaultAuthBaseURL,
-		autoRenew:   true,
-		saveOnRenew: true,
+		endpoints:     DefaultEndpoints(),
+		authBaseURL:   DefaultAuthBaseURL,
+		autoRenew:     true,
+		saveOnRenew:   true,
+		blobSizeLimit: MaxBlobSize,
 	}
 
 	for _, opt := range opts {
@@ -383,38 +400,63 @@ func (c *Client) GetManifest(ctx context.Context, hash, filename string) (*Manif
 	return ParseManifest(hash, bytes.NewReader(data))
 }
 
-// GetBlob downloads the raw content bytes for a file identified by hash and rm-filename.
+// GetBlob downloads the raw content bytes for a blob identified by hash and rm-filename, reading
+// at most the blob size limit (MaxBlobSize unless WithBlobSizeLimit lowers it). Read a file that a
+// document index lists with GetFile, which reads at most the size the index lists.
 func (c *Client) GetBlob(ctx context.Context, hash, filename string) ([]byte, error) {
-	return c.getBlob(ctx, hash, filename, true)
+	return c.getBlob(ctx, hash, filename, c.blobSizeLimit, true)
 }
 
-// GetBlobFresh downloads bytes directly from cloud storage, bypassing the disk cache.
+// GetBlobFresh downloads bytes directly from cloud storage, bypassing the disk cache, with the same
+// size limit as GetBlob.
 func (c *Client) GetBlobFresh(ctx context.Context, hash, filename string) ([]byte, error) {
-	return c.getBlob(ctx, hash, filename, false)
+	return c.getBlob(ctx, hash, filename, c.blobSizeLimit, false)
 }
 
-// getBlob returns the blob for hash. It rejects a hash that is not a blob address before any request
-// or cache access, so a manifest cannot inject a path into the request URL or the cache. With cache
-// set and a cache directory configured, it serves an entry only after verifying it against hash and
-// stores downloads, which downloadBlob has already verified.
-func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool) ([]byte, error) {
+// GetFile downloads the file that entry, a record of a document index, names. It requests entry.Hash
+// under the filename entry.ID and reads at most entry.Size bytes, the size the index lists, capped
+// at the blob size limit; a larger blob returns ErrResponseTooLarge and is never cached. Document
+// indexes list each file's exact size. Records of a root index list a document's total size
+// instead, so read the index they name with GetManifest.
+func (c *Client) GetFile(ctx context.Context, entry SchemaEntry) ([]byte, error) {
+	return c.getFile(ctx, entry, true)
+}
+
+// GetFileFresh downloads the file that entry names as GetFile does, bypassing the disk cache.
+func (c *Client) GetFileFresh(ctx context.Context, entry SchemaEntry) ([]byte, error) {
+	return c.getFile(ctx, entry, false)
+}
+
+func (c *Client) getFile(ctx context.Context, entry SchemaEntry, cache bool) ([]byte, error) {
+	if entry.Size < 0 {
+		return nil, fmt.Errorf("%w: negative size %d for %s", ErrInvalidSchema, entry.Size, entry.ID)
+	}
+	return c.getBlob(ctx, entry.Hash, entry.ID, min(entry.Size, c.blobSizeLimit), cache)
+}
+
+// getBlob returns the blob for hash, reading at most limit bytes. It rejects a hash that is not a
+// blob address before any request or cache access, so a manifest cannot inject a path into the
+// request URL or the cache. With cache set and a cache directory configured, it serves an entry only
+// after verifying it against hash and limit, and stores downloads, which downloadBlob has already
+// verified.
+func (c *Client) getBlob(ctx context.Context, hash, filename string, limit int64, cache bool) ([]byte, error) {
 	if err := validateBlobHash(hash); err != nil {
 		return nil, err
 	}
 	if !cache || c.cacheDir == "" {
-		return c.downloadBlob(ctx, hash, filename)
+		return c.downloadBlob(ctx, hash, filename, limit)
 	}
 	blobs, err := c.openBlobCache()
 	if err != nil {
 		// The cache only saves downloads; a directory that cannot be created or secured must not
 		// fail the read, and nothing is written to it.
-		return c.downloadBlob(ctx, hash, filename)
+		return c.downloadBlob(ctx, hash, filename, limit)
 	}
 	defer func() { _ = blobs.Close() }()
-	if data, ok := readCachedBlob(blobs, hash, filename); ok {
+	if data, ok := readCachedBlob(blobs, hash, filename, limit); ok {
 		return data, nil
 	}
-	data, err := c.downloadBlob(ctx, hash, filename)
+	data, err := c.downloadBlob(ctx, hash, filename, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -423,10 +465,11 @@ func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool)
 	return data, nil
 }
 
-// downloadBlob fetches the blob for hash from cloud storage and returns ErrBlobHashMismatch when the
-// bytes are not the blob hash addresses. There is no other copy to fall back on, and bytes that do
-// not match the requested address are not the requested data.
-func (c *Client) downloadBlob(ctx context.Context, hash, filename string) ([]byte, error) {
+// downloadBlob fetches the blob for hash from cloud storage. It stops reading after limit bytes and
+// returns ErrResponseTooLarge for a longer body, and returns ErrBlobHashMismatch when the bytes are
+// not the blob hash addresses. There is no other copy to fall back on, and bytes that do not match
+// the requested address are not the requested data.
+func (c *Client) downloadBlob(ctx context.Context, hash, filename string, limit int64) ([]byte, error) {
 	url := fmt.Sprintf("%s/sync/v3/files/%s", strings.TrimRight(c.endpoints.StorageHost, "/"), hash)
 
 	resp, err := c.executeWithAuth(ctx, func(token string) (*http.Request, error) {
@@ -453,9 +496,12 @@ func (c *Client) downloadBlob(ctx context.Context, hash, filename string) ([]byt
 		return nil, statusErr
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, tooLarge, err := readAtMost(resp.Body, limit)
 	if err != nil {
 		return nil, err
+	}
+	if tooLarge {
+		return nil, fmt.Errorf("%w: get blob %s (%s) exceeds %d bytes", ErrResponseTooLarge, hash, filename, limit)
 	}
 	if !blobMatchesHash(hash, filename, data) {
 		return nil, fmt.Errorf("%w: get blob %s (%s)", ErrBlobHashMismatch, hash, filename)
@@ -463,12 +509,17 @@ func (c *Client) downloadBlob(ctx context.Context, hash, filename string) ([]byt
 	return data, nil
 }
 
-// GetContent fetches and JSON-unmarshals a file blob into the target value.
+// GetContent fetches a blob with GetBlob and JSON-unmarshals it into the target value.
 func (c *Client) GetContent(ctx context.Context, hash, filename string, target any) error {
 	data, err := c.GetBlob(ctx, hash, filename)
 	if err != nil {
 		return err
 	}
+	return decodeContent(data, filename, target)
+}
+
+// decodeContent JSON-unmarshals the bytes of the file named filename into target.
+func decodeContent(data []byte, filename string, target any) error {
 	if err := json.Unmarshal(data, target); err != nil {
 		return fmt.Errorf("unmarshal content (%s): %w", filename, err)
 	}

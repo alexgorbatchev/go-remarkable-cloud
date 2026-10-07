@@ -65,18 +65,18 @@ func (s *blobServer) total() int {
 
 // newBlobCacheClient returns a client that caches blobs in cacheDir and downloads them from a
 // blobServer holding blobs.
-func newBlobCacheClient(t *testing.T, cacheDir, rootHash string, blobs map[string][]byte) (*cloud.Client, *blobServer) {
+func newBlobCacheClient(t *testing.T, cacheDir, rootHash string, blobs map[string][]byte, opts ...cloud.Option) (*cloud.Client, *blobServer) {
 	t.Helper()
 	s := &blobServer{rootHash: rootHash, blobs: blobs, requests: map[string]int{}}
 	server := httptest.NewServer(http.HandlerFunc(s.serveHTTP))
 	t.Cleanup(server.Close)
-	client, err := cloud.NewClient(
+	client, err := cloud.NewClient(append([]cloud.Option{
 		cloud.WithConfig(&cloud.Config{DeviceToken: "dev-token", UserToken: "user-token"}),
 		cloud.WithStorageHost(server.URL),
 		cloud.WithAuthBaseURL(server.URL),
 		cloud.WithSaveOnRenew(false),
 		cloud.WithCacheDir(cacheDir),
-	)
+	}, opts...)...)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -459,5 +459,50 @@ func TestBlobCacheThatCannotBeCreatedStillDownloads(t *testing.T) {
 	}
 	if n := server.count(hash); n != 2 {
 		t.Errorf("downloaded %d times, want 2", n)
+	}
+}
+
+func TestBlobCacheEvictsEntryThatFailsVerification(t *testing.T) {
+	hash := blobHash([]byte("cloud file bytes"))
+	cacheDir := t.TempDir()
+	entry := filepath.Join(cacheDir, "blobs", hash)
+	if err := os.MkdirAll(filepath.Dir(entry), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("tampered"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The server no longer has the blob, so the download fails after the entry is rejected.
+	client, server := newBlobCacheClient(t, cacheDir, "", map[string][]byte{})
+
+	data, err := client.GetBlob(context.Background(), hash, "doc.pdf")
+	if !errors.Is(err, cloud.ErrItemNotFound) || server.count(hash) != 1 {
+		t.Fatalf("GetBlob = %q, %v after %d downloads; want the failed download", data, err, server.count(hash))
+	}
+	if _, err := os.Lstat(entry); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the rejected cache entry is still present: %v", err)
+	}
+}
+
+func TestBlobCacheRemovesTemporaryFileWhenWriteFails(t *testing.T) {
+	payload := []byte("cloud file bytes")
+	hash := blobHash(payload)
+	cacheDir := t.TempDir()
+	// A directory where the entry belongs: renaming the written temporary file onto it fails.
+	if err := os.MkdirAll(filepath.Join(cacheDir, "blobs", hash), 0700); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := newBlobCacheClient(t, cacheDir, "", map[string][]byte{hash: payload})
+
+	data, err := client.GetBlob(context.Background(), hash, "doc.pdf")
+	if err != nil || string(data) != string(payload) {
+		t.Fatalf("GetBlob = %q, %v; want the downloaded bytes", data, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(cacheDir, "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != hash {
+		t.Errorf("cache holds %v after the failed write, want only %s", entries, hash)
 	}
 }

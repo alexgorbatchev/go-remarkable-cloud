@@ -2,6 +2,7 @@ package cloud_test
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -41,4 +42,15 @@ func (f blobFixtures) serve(w http.ResponseWriter, r *http.Request) bool {
 	}
 	_, _ = w.Write(data)
 	return true
+}
+
+// size returns the length of data as an index record lists it.
+func size(data string) string {
+	return strconv.Itoa(len(data))
+}
+
+// fileRecord publishes data and returns the four-field index record "hash:id:0:size" that lists it
+// under id with its exact size, as real document indexes list files.
+func (f blobFixtures) fileRecord(id, data string) string {
+	return f.add(data) + ":" + id + ":0:" + size(data)
 }

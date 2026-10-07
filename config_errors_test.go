@@ -92,6 +92,12 @@ func TestNewClientAcceptsAbsentConfigFile(t *testing.T) {
 			isolateDefaultConfig(t, dir)
 			return []cloud.Option{cloud.WithDefaultConfigFile()}
 		}, cloud.Config{}},
+		{"no home directory and no candidate", func(t *testing.T, dir string) []cloud.Option {
+			t.Setenv("HOME", "")
+			t.Setenv("RMAPI_CONFIG", "")
+			t.Setenv("XDG_CONFIG_HOME", "")
+			return []cloud.Option{cloud.WithDefaultConfigFile()}
+		}, cloud.Config{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

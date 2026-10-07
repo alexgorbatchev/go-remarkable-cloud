@@ -64,11 +64,11 @@ func newShuffledListingClient(t *testing.T, layout string, items []listingItem, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		meta := blobs.add(string(b))
+		meta := blobs.fileRecord(it.id+".metadata", string(b))
 		if layout == "flat" {
-			lines = append(lines, meta+":"+it.id+".metadata:0:1")
+			lines = append(lines, meta)
 		} else {
-			lines = append(lines, blobs.manifest(meta+":"+it.id+".metadata:0:1")+":"+it.id+":0:1")
+			lines = append(lines, blobs.manifest(meta)+":"+it.id+":0:1")
 		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

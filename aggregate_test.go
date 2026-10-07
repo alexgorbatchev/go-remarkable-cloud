@@ -15,16 +15,16 @@ func TestListItemsAggregate(t *testing.T) {
 	for _, layout := range []string{"nested", "flat", "empty"} {
 		t.Run(layout, func(t *testing.T) {
 			blobs := blobFixtures{}
-			docMeta := blobs.add(`{"visibleName":"2026 - Daily","type":"DocumentType","parent":"folder","lastModified":"1790799655380"}`)
-			folderMeta := blobs.add(`{"visibleName":"Plans","type":"CollectionType"}`)
-			docSchema := blobs.manifest(docMeta + ":doc.metadata:0:100")
-			folderSchema := blobs.manifest(folderMeta + ":folder.metadata:0:100")
+			docMeta := blobs.fileRecord("doc.metadata", `{"visibleName":"2026 - Daily","type":"DocumentType","parent":"folder","lastModified":"1790799655380"}`)
+			folderMeta := blobs.fileRecord("folder.metadata", `{"visibleName":"Plans","type":"CollectionType"}`)
+			docSchema := blobs.manifest(docMeta)
+			folderSchema := blobs.manifest(folderMeta)
 			lines := []string{"4", "0:.:75:211191896"}
 			switch layout {
 			case "nested":
 				lines = append(lines, docSchema+":doc:0:100", folderSchema+":folder:0:100")
 			case "flat":
-				lines = append(lines, docMeta+":doc.metadata:0:100", folderMeta+":folder.metadata:0:100")
+				lines = append(lines, docMeta, folderMeta)
 			}
 			root := blobs.manifest(lines...)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

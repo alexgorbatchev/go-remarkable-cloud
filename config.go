@@ -102,7 +102,8 @@ func CandidateConfigPaths() []string {
 
 // ResolveConfigPath resolves the configuration file path. If override is non-empty,
 // that path is returned. Otherwise, candidate paths are checked sequentially for existence.
-// If none exist, the default ~/.rmapi path is returned.
+// If none exist, the default ~/.rmapi path is returned; without a home directory the error
+// matches ErrConfigNotFound.
 func ResolveConfigPath(override string) (string, error) {
 	if override != "" {
 		return filepath.Clean(override), nil
@@ -115,7 +116,9 @@ func ResolveConfigPath(override string) (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("unable to determine home directory: %w", err)
+		// No candidate exists and there is no home directory for the default path: no config file
+		// can be found.
+		return "", fmt.Errorf("%w: unable to determine home directory: %w", ErrConfigNotFound, err)
 	}
 	return filepath.Join(home, ".rmapi"), nil
 }

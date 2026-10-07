@@ -104,7 +104,15 @@ func (it *Item) GetContent(ctx context.Context) (*DocumentContent, error) {
 		return nil, fmt.Errorf("%w: content entry not found for item %s", ErrItemNotFound, it.ID)
 	}
 
-	return it.client.GetDocumentContent(ctx, contentEntry.Hash, contentEntry.ID)
+	data, err := it.client.GetFile(ctx, *contentEntry)
+	if err != nil {
+		return nil, err
+	}
+	var dc DocumentContent
+	if err := decodeContent(data, contentEntry.ID, &dc); err != nil {
+		return nil, err
+	}
+	return &dc, nil
 }
 
 // FindEntrySuffix finds an entry in the item's known entries matching the suffix.
@@ -171,10 +179,10 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 	if hasSubfiles {
 		// Group entries by item UUID prefix
 		type itemGroup struct {
-			id           string
-			schemaHash   string
-			metadataHash string
-			entries      []SchemaEntry
+			id         string
+			schemaHash string
+			metadata   *SchemaEntry
+			entries    []SchemaEntry
 		}
 		groups := make(map[string]*itemGroup)
 
@@ -198,7 +206,7 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 			g.entries = append(g.entries, entry)
 
 			if strings.HasSuffix(id, ".metadata") {
-				g.metadataHash = entry.Hash
+				g.metadata = &entry
 			} else if strings.HasSuffix(id, ".docSchema") || id == itemID {
 				g.schemaHash = entry.Hash
 			}
@@ -207,9 +215,9 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		var items []*Item
 		for _, g := range groups {
 			var meta ItemMetadata
-			if g.metadataHash != "" {
+			if g.metadata != nil {
 				var err error
-				meta, err = c.readItemMetadata(ctx, g.metadataHash, g.id+".metadata")
+				meta, err = c.readItemMetadata(ctx, *g.metadata)
 				if err != nil {
 					return nil, err
 				}
@@ -266,7 +274,7 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 			var meta ItemMetadata
 			metaEntry := itemManifest.FindSuffix(".metadata")
 			if metaEntry != nil {
-				meta, err = c.readItemMetadata(ctx, metaEntry.Hash, metaEntry.ID)
+				meta, err = c.readItemMetadata(ctx, *metaEntry)
 				if err != nil {
 					resultsChan <- itemResult{err: err}
 					return
@@ -311,14 +319,15 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 	return items, nil
 }
 
-func (c *Client) readItemMetadata(ctx context.Context, hash, filename string) (ItemMetadata, error) {
+// readItemMetadata reads the .metadata file that entry lists, bounded by the size the index lists.
+func (c *Client) readItemMetadata(ctx context.Context, entry SchemaEntry) (ItemMetadata, error) {
 	var meta ItemMetadata
-	b, err := c.GetBlob(ctx, hash, filename)
+	b, err := c.GetFile(ctx, entry)
 	if err != nil {
-		return meta, fmt.Errorf("get metadata %s: %w", filename, err)
+		return meta, fmt.Errorf("get metadata %s: %w", entry.ID, err)
 	}
 	if err := json.Unmarshal(b, &meta); err != nil {
-		return meta, fmt.Errorf("decode metadata %s: %w", filename, err)
+		return meta, fmt.Errorf("decode metadata %s: %w", entry.ID, err)
 	}
 	return meta, nil
 }
@@ -341,7 +350,7 @@ func (c *Client) ResolveByID(ctx context.Context, id string) (*Item, error) {
 		}
 		var meta ItemMetadata
 		if metaEntry := itemManifest.FindSuffix(".metadata"); metaEntry != nil {
-			meta, err = c.readItemMetadata(ctx, metaEntry.Hash, metaEntry.ID)
+			meta, err = c.readItemMetadata(ctx, *metaEntry)
 			if err != nil {
 				return nil, err
 			}

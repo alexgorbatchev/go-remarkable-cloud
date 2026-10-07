@@ -74,7 +74,7 @@ func PairDevice(ctx context.Context, client *http.Client, authBaseURL, code, dev
 	if resp.StatusCode != http.StatusOK {
 		return "", readStatusError("pair device", resp)
 	}
-	bodyBytes, err := readServiceResponse("pair", resp.Body)
+	bodyBytes, err := readServiceResponse("pair device", resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -117,7 +117,7 @@ func RenewUserToken(ctx context.Context, client *http.Client, authBaseURL, devic
 	if resp.StatusCode != http.StatusOK {
 		return "", readStatusError("renew user token", resp)
 	}
-	bodyBytes, err := readServiceResponse("renew", resp.Body)
+	bodyBytes, err := readServiceResponse("renew user token", resp.Body)
 	if err != nil {
 		return "", err
 	}

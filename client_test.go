@@ -203,6 +203,8 @@ func TestClient_AutoRenewTrigger(t *testing.T) {
 		{name: "400 validation message mentioning token", status: http.StatusBadRequest, body: `{"message":"invalid rm-filename token"}`},
 		{name: "400 malformed token message as plain text", status: http.StatusBadRequest, body: "token is malformed"},
 		{name: "400 other message field value", status: http.StatusBadRequest, body: `{"message":"token is malformed: header"}`},
+		// Only a whole body can be the malformed-token answer; one cut at the 4096-byte error limit cannot.
+		{name: "400 malformed token padded past the error body limit", status: http.StatusBadRequest, body: `{"message":"token is malformed"}` + strings.Repeat(" ", 5000)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -247,7 +249,8 @@ func TestClient_AutoRenewTrigger(t *testing.T) {
 				t.Fatalf("renewed after a 400 that does not refuse the token: renewals %d, storage calls %d", renewals.Load(), storageCalls.Load())
 			}
 			var statusErr *cloud.StatusError
-			if !errors.As(err, &statusErr) || statusErr.StatusCode != tt.status || statusErr.Body != tt.body || statusErr.Err != nil {
+			wantBody := tt.body[:min(len(tt.body), 4096)]
+			if !errors.As(err, &statusErr) || statusErr.StatusCode != tt.status || statusErr.Body != wantBody || statusErr.Err != nil {
 				t.Fatalf("expected unclassified status %d with body %q, got %v", tt.status, tt.body, err)
 			}
 		})

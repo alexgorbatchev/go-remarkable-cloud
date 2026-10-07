@@ -20,11 +20,12 @@ func TestResolverMetadataErrors(t *testing.T) {
 			for _, operation := range []string{"list", "id", "resolve", "name", "path"} {
 				t.Run(layout+"/"+failure+"/"+operation, func(t *testing.T) {
 					blobs := blobFixtures{}
-					meta := blobs.add(`{"visibleName":`)
-					schema := blobs.manifest(meta + ":doc.metadata:0:1")
+					metaRecord := blobs.fileRecord("doc.metadata", `{"visibleName":`)
+					meta := strings.SplitN(metaRecord, ":", 2)[0]
+					schema := blobs.manifest(metaRecord)
 					root := blobs.manifest(schema + ":doc:0:1")
 					if layout == "flat" {
-						root = blobs.manifest(meta + ":doc.metadata:0:1")
+						root = blobs.manifest(metaRecord)
 					}
 					s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						switch r.URL.Path {
@@ -68,8 +69,13 @@ func TestResolverMetadataErrors(t *testing.T) {
 					case "path":
 						_, err = c.ResolveByPath(ctx, "Folder/Title")
 					}
-					if err == nil || !strings.Contains(err.Error(), "doc") {
-						t.Fatalf("expected contextual document error, got %v", err)
+					want := map[string]string{
+						"download": "get metadata doc.metadata: get blob",
+						"json":     "decode metadata doc.metadata",
+						"manifest": "get item doc manifest",
+					}[failure]
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Fatalf("expected contextual document error containing %q, got %v", want, err)
 					}
 				})
 			}
@@ -88,7 +94,7 @@ func TestItemGetContentManifestFailure(t *testing.T) {
 	schema := blobHash([]byte(schemaBody))
 	metaBody := `{"visibleName":"Doc","type":"DocumentType","parent":""}`
 	meta := blobHash([]byte(metaBody))
-	rootBody := "3\n" + schema + ":0:doc.docSchema:0:1\n" + meta + ":0:doc.metadata:0:1\n"
+	rootBody := "3\n" + schema + ":0:doc.docSchema:0:1\n" + meta + ":0:doc.metadata:0:" + size(metaBody) + "\n"
 	root := blobHash([]byte(rootBody))
 	tests := []struct {
 		name     string

@@ -91,8 +91,7 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 
 	// 6. Fast ResolveByID with mock server
 	blobs := blobFixtures{}
-	metaHash := blobs.add(`{"visibleName":"Target Note","type":"DocumentType"}`)
-	docHash := blobs.manifest(metaHash + ":doc-target.metadata:0:50")
+	docHash := blobs.manifest(blobs.fileRecord("doc-target.metadata", `{"visibleName":"Target Note","type":"DocumentType"}`))
 	rootHash := blobs.manifest(docHash + ":doc-target:0:100")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

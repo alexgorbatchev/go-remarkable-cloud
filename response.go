@@ -25,14 +25,14 @@ func readAtMost(r io.Reader, limit int64) ([]byte, bool, error) {
 }
 
 // readServiceResponse reads the body of a successful auth, discovery, or root answer named op, and
-// fails instead of reading past maxServiceResponseSize.
+// returns ErrResponseTooLarge instead of reading past maxServiceResponseSize.
 func readServiceResponse(op string, r io.Reader) ([]byte, error) {
 	data, truncated, err := readAtMost(r, maxServiceResponseSize)
 	if err != nil {
 		return nil, fmt.Errorf("read %s response: %w", op, err)
 	}
 	if truncated {
-		return nil, fmt.Errorf("%s response exceeds %d bytes", op, maxServiceResponseSize)
+		return nil, fmt.Errorf("%w: %s response exceeds %d bytes", ErrResponseTooLarge, op, maxServiceResponseSize)
 	}
 	return data, nil
 }

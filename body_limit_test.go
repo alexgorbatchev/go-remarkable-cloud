@@ -121,15 +121,17 @@ func TestServiceResponsesAreBounded(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.call(t, newStreamingServer(t, http.StatusOK, tt.body).URL)
-			if err == nil || !strings.Contains(err.Error(), "response exceeds 65536 bytes") {
-				t.Fatalf("err = %v, want a response size error", err)
+			if !errors.Is(err, cloud.ErrResponseTooLarge) || !strings.Contains(err.Error(), tt.name+" response exceeds 65536 bytes") {
+				t.Fatalf("err = %v, want ErrResponseTooLarge naming the %s response", err, tt.name)
 			}
 		})
 	}
 }
 
 func TestServiceResponseReadErrorsAreReturned(t *testing.T) {
-	for _, name := range []string{"pair device", "renew user token", "discovery", "storage status"} {
+	// Each call maps to the operation its read error names.
+	ops := map[string]string{"pair device": "pair device", "renew user token": "renew user token", "discovery": "discovery", "storage status": "root state"}
+	for name, op := range ops {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				// Promise more bytes than are sent, so the client body read fails partway.
@@ -139,7 +141,7 @@ func TestServiceResponseReadErrorsAreReturned(t *testing.T) {
 			t.Cleanup(server.Close)
 
 			err := boundedCalls[name](t, server.URL)
-			if !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "read ") {
+			if !errors.Is(err, io.ErrUnexpectedEOF) || !strings.Contains(err.Error(), "read "+op+" response") {
 				t.Fatalf("err = %v, want the wrapped body read error", err)
 			}
 		})

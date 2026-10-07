@@ -40,6 +40,13 @@ var (
 	// requested by.
 	ErrBlobHashMismatch = errors.New("downloaded blob does not match its hash")
 
+	// ErrResponseTooLarge is returned when a successful response body is longer than the client reads:
+	// 64 KiB for a pairing, renewal, discovery, root state, or root commit answer; the size a document
+	// index lists for a file read with GetFile; the blob size limit (MaxBlobSize by default) for any
+	// other blob. The server answered, so the request is not retried; nothing past the limit is read,
+	// and an oversized blob is never cached.
+	ErrResponseTooLarge = errors.New("response too large")
+
 	// ErrConfigNotSaved is returned when a renewed user token could not be written to the config
 	// file. The renewed token is valid and the client keeps using it.
 	ErrConfigNotSaved = errors.New("renewed user token not saved to config file")
