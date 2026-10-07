@@ -371,7 +371,7 @@ func (c *Client) ResolveByID(ctx context.Context, id string) (*Item, error) {
 
 // ResolveByName finds the live item whose visibleName exactly matches name. Live items are the
 // ones ListItems returns by default: not deleted and not directly in the trash. When several live
-// items share the name, it returns an *AmbiguousNameError that lists every one of them.
+// items share the name, it returns an *AmbiguousNameError whose Candidates hold every one of them.
 func (c *Client) ResolveByName(ctx context.Context, name string) (*Item, error) {
 	items, err := c.ListItems(ctx)
 	if err != nil {

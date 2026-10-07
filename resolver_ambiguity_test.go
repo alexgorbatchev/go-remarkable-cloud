@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -143,9 +144,13 @@ func requireAmbiguous(t *testing.T, err error, query, name string, want []candid
 	if !slices.Equal(got, want) {
 		t.Fatalf("candidates =\n%+v\nwant\n%+v", got, want)
 	}
+	// Candidates reach callers only through the typed fields; the text states their count.
+	if !strings.Contains(err.Error(), fmt.Sprintf(" matches %d items", len(want))) {
+		t.Fatalf("error text %q does not state %d candidates", err.Error(), len(want))
+	}
 	for _, c := range want {
-		if !strings.Contains(err.Error(), c.ID) {
-			t.Fatalf("error text %q does not name candidate %s", err.Error(), c.ID)
+		if strings.Contains(err.Error(), c.ID) {
+			t.Fatalf("error text %q inlines candidate %s", err.Error(), c.ID)
 		}
 	}
 }
@@ -304,12 +309,12 @@ func TestAmbiguousNameErrorText(t *testing.T) {
 			{Item: &cloud.Item{ID: "id-sub"}, FolderPath: "Sub", Unreachable: true},
 		},
 	}
-	want := `ambiguous item name: "Notes" in "Work/Notes" matches 4 items: id-root (root), id-work ("Work"), id-detached (unreachable), id-sub (unreachable "Sub")`
+	want := `ambiguous item name: "Notes" in "Work/Notes" matches 4 items`
 	if got := err.Error(); got != want {
 		t.Fatalf("Error() =\n%s\nwant\n%s", got, want)
 	}
 	err.Query = "Notes"
-	wantName := `ambiguous item name: "Notes" matches 4 items: id-root (root), id-work ("Work"), id-detached (unreachable), id-sub (unreachable "Sub")`
+	wantName := `ambiguous item name: "Notes" matches 4 items`
 	if got := err.Error(); got != wantName {
 		t.Fatalf("Error() =\n%s\nwant\n%s", got, wantName)
 	}

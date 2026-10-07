@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 )
 
 var (
@@ -68,8 +67,9 @@ func (e *StatusError) Unwrap() error {
 }
 
 // AmbiguousNameError reports that a visible name, or one segment of a path, matches more than one
-// live item, so name and path resolution cannot choose between them. Callers read the candidates
-// with errors.As; errors.Is matches ErrAmbiguousName.
+// live item, so name and path resolution cannot choose between them. Its Error text states only
+// the name and the candidate count; callers read and render the candidates with errors.As.
+// errors.Is matches ErrAmbiguousName.
 type AmbiguousNameError struct {
 	// Query is the name or path the caller asked to resolve, exactly as passed to the resolver.
 	Query string
@@ -103,31 +103,16 @@ type AmbiguousCandidate struct {
 	Unreachable bool
 }
 
-// Error names the ambiguous name, the query when it differs, and each candidate's ID and folder.
+// Error names the ambiguous name, the query when it differs, and the number of candidates, for
+// example `ambiguous item name: "Notes" in "Work/Notes" matches 2 items`. It does not list the
+// candidates: callers that show them read Candidates with errors.As and render them in their own
+// format.
 func (e *AmbiguousNameError) Error() string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s: %q", ErrAmbiguousName, e.Name)
+	msg := fmt.Sprintf("%s: %q", ErrAmbiguousName, e.Name)
 	if e.Query != e.Name {
-		fmt.Fprintf(&b, " in %q", e.Query)
+		msg += fmt.Sprintf(" in %q", e.Query)
 	}
-	fmt.Fprintf(&b, " matches %d items: ", len(e.Candidates))
-	for i, c := range e.Candidates {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(c.Item.ID)
-		switch {
-		case c.Unreachable && c.FolderPath == "":
-			b.WriteString(" (unreachable)")
-		case c.Unreachable:
-			fmt.Fprintf(&b, " (unreachable %q)", c.FolderPath)
-		case c.FolderPath == "":
-			b.WriteString(" (root)")
-		default:
-			fmt.Fprintf(&b, " (%q)", c.FolderPath)
-		}
-	}
-	return b.String()
+	return msg + fmt.Sprintf(" matches %d items", len(e.Candidates))
 }
 
 // Unwrap returns ErrAmbiguousName so errors.Is classifies every ambiguity the same way.
