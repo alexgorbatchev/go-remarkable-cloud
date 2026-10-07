@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -72,13 +71,12 @@ func PairDevice(ctx context.Context, client *http.Client, authBaseURL, code, dev
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read pair response: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return "", newStatusError("pair device", resp.StatusCode, bodyBytes)
+		return "", readStatusError("pair device", resp)
+	}
+	bodyBytes, err := readServiceResponse("pair", resp.Body)
+	if err != nil {
+		return "", err
 	}
 
 	token := strings.TrimSpace(string(bodyBytes))
@@ -116,13 +114,12 @@ func RenewUserToken(ctx context.Context, client *http.Client, authBaseURL, devic
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read renew response: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
-		return "", newStatusError("renew user token", resp.StatusCode, bodyBytes)
+		return "", readStatusError("renew user token", resp)
+	}
+	bodyBytes, err := readServiceResponse("renew", resp.Body)
+	if err != nil {
+		return "", err
 	}
 
 	token := strings.TrimSpace(string(bodyBytes))

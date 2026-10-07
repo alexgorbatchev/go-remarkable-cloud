@@ -130,7 +130,11 @@ func ReadConfigFile(path string) (*Config, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	return ParseConfig(f)
+	cfg, err := ParseConfig(f)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return cfg, nil
 }
 
 // WriteConfigFile writes the configuration to disk with restricted permissions (0600).

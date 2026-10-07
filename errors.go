@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 )
 
@@ -32,6 +31,14 @@ var (
 
 	// ErrDiscoveryFailed is returned when service discovery fails.
 	ErrDiscoveryFailed = errors.New("service discovery failed")
+
+	// ErrInvalidBlobHash is returned when a blob hash that would name a disk cache entry is not 64
+	// lowercase hexadecimal digits, the form of every sync v3 SHA-256 blob address.
+	ErrInvalidBlobHash = errors.New("invalid blob hash")
+
+	// ErrConfigNotSaved is returned when a renewed user token could not be written to the config
+	// file. The renewed token is valid and the client keeps using it.
+	ErrConfigNotSaved = errors.New("renewed user token not saved to config file")
 )
 
 // StatusError reports an HTTP response whose status the requested operation does not accept.
@@ -45,17 +52,23 @@ type StatusError struct {
 	Op string
 	// StatusCode is the HTTP response status code.
 	StatusCode int
-	// Body is the response body exactly as the server sent it.
+	// Body is the response body exactly as the server sent it, up to its first 4096 bytes.
 	Body string
+	// Truncated reports that the server sent more than the 4096 bytes kept in Body.
+	Truncated bool
 	// Err is the sentinel classification for the status, or nil when it has none.
 	Err error
 }
 
-// Error returns the classification, operation, status code, and server response body.
+// Error returns the classification, operation, status code, and kept server response body, which
+// ends with " [truncated]" when the server sent more.
 func (e *StatusError) Error() string {
 	msg := fmt.Sprintf("%s failed with status %d", e.Op, e.StatusCode)
 	if e.Body != "" {
 		msg += ": " + e.Body
+	}
+	if e.Truncated {
+		msg += " [truncated]"
 	}
 	if e.Err != nil {
 		return e.Err.Error() + ": " + msg
@@ -122,23 +135,14 @@ func (e *AmbiguousNameError) Unwrap() error {
 	return ErrAmbiguousName
 }
 
-// newStatusError classifies a rejected response; a refused credential matches ErrUnauthorized.
-func newStatusError(op string, statusCode int, body []byte) *StatusError {
-	e := &StatusError{Op: op, StatusCode: statusCode, Body: string(body)}
-	if credentialsRefused(statusCode, body) {
-		e.Err = ErrUnauthorized
-	}
-	return e
-}
-
 // malformedTokenMessage is the message field of the JSON body the sync storage service sends with
 // status 400 for a bearer token it cannot parse.
 const malformedTokenMessage = "token is malformed"
 
 // credentialsRefused reports whether a response refused the request's credentials: any 401 or 403,
-// or a 400 whose body is the storage service's malformed-token message. Every other 400 rejects the
-// request itself.
-func credentialsRefused(statusCode int, body []byte) bool {
+// or a 400 whose whole body is the storage service's malformed-token message. A truncated body is
+// never that message. Every other 400 rejects the request itself.
+func credentialsRefused(statusCode int, body []byte, truncated bool) bool {
 	switch statusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return true
@@ -146,14 +150,19 @@ func credentialsRefused(statusCode int, body []byte) bool {
 		var reply struct {
 			Message string `json:"message"`
 		}
-		return json.Unmarshal(body, &reply) == nil && reply.Message == malformedTokenMessage
+		return !truncated && json.Unmarshal(body, &reply) == nil && reply.Message == malformedTokenMessage
 	}
 	return false
 }
 
-// readStatusError reads the rejected response body and classifies the response.
+// readStatusError reads at most maxErrorBodySize bytes of the rejected response body and classifies
+// the response; a refused credential matches ErrUnauthorized.
 func readStatusError(op string, resp *http.Response) *StatusError {
 	// The status code already decides the failure; a body read error only loses the server reason.
-	body, _ := io.ReadAll(resp.Body)
-	return newStatusError(op, resp.StatusCode, body)
+	body, truncated, _ := readAtMost(resp.Body, maxErrorBodySize)
+	e := &StatusError{Op: op, StatusCode: resp.StatusCode, Body: string(body), Truncated: truncated}
+	if credentialsRefused(resp.StatusCode, body, truncated) {
+		e.Err = ErrUnauthorized
+	}
+	return e
 }

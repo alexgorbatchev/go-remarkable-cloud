@@ -270,37 +270,57 @@ func (c *Client) freshManifest(ctx context.Context, hash, name string) (*Manifes
 	return ParseManifest(hash, bytes.NewReader(data))
 }
 
+// indexOrder returns the records a schema index hashes: every entry but the schema v4 "." aggregate,
+// sorted by ID.
+func indexOrder(entries []SchemaEntry) []SchemaEntry {
+	ordered := make([]SchemaEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.ID != "." {
+			ordered = append(ordered, entry)
+		}
+	}
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	return ordered
+}
+
+// indexEntryHash returns the schema v3 address of an index whose records are ordered as indexOrder
+// orders them: the SHA-256 of their decoded hashes. The tablet addresses document indexes this way.
+func indexEntryHash(ordered []SchemaEntry) (string, error) {
+	hasher := sha256.New()
+	for _, entry := range ordered {
+		hash, err := hex.DecodeString(entry.Hash)
+		if err != nil || len(hash) != sha256.Size {
+			return "", fmt.Errorf("invalid hash for %s", entry.ID)
+		}
+		hasher.Write(hash)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
 // Root v4 hashes the serialized index; document v3 hashes ordered binary file hashes.
 func encodeCloudManifest(entries []SchemaEntry, root bool) ([]byte, string, int64, error) {
-	ordered := make([]SchemaEntry, 0, len(entries))
+	ordered := indexOrder(entries)
 	var size int64
-	for _, entry := range entries {
-		if entry.ID == "." {
-			continue
-		}
+	for _, entry := range ordered {
 		if entry.ID == "" || strings.ContainsAny(entry.ID, "\r\n:") || entry.Size < 0 {
 			return nil, "", 0, fmt.Errorf("invalid schema entry %q", entry.ID)
 		}
-		ordered = append(ordered, entry)
 		size += entry.Size
 	}
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	hash, err := indexEntryHash(ordered)
+	if err != nil {
+		return nil, "", 0, err
+	}
 	var buf bytes.Buffer
 	if root {
 		fmt.Fprintf(&buf, "4\n0:.:%d:%d\n", len(ordered), size)
 	} else {
 		buf.WriteString("3\n")
 	}
-	hasher := sha256.New()
 	for i, entry := range ordered {
 		if i > 0 && ordered[i-1].ID == entry.ID {
 			return nil, "", 0, fmt.Errorf("duplicate schema entry %s", entry.ID)
 		}
-		hash, err := hex.DecodeString(entry.Hash)
-		if err != nil || len(hash) != sha256.Size {
-			return nil, "", 0, fmt.Errorf("invalid hash for %s", entry.ID)
-		}
-		hasher.Write(hash)
 		typ := entry.Type
 		if typ == "" {
 			typ = "0"
@@ -313,7 +333,6 @@ func encodeCloudManifest(entries []SchemaEntry, root bool) ([]byte, string, int6
 		}
 		fmt.Fprintf(&buf, "%s:%s:%s:%d:%d\n", entry.Hash, typ, entry.ID, entry.Subfiles, entry.Size)
 	}
-	hash := hex.EncodeToString(hasher.Sum(nil))
 	if root {
 		hash = contentHash(buf.Bytes())
 	}
@@ -391,8 +410,12 @@ func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) 
 	if resp.StatusCode != http.StatusOK {
 		return rejectedCommitState(resp.StatusCode), commitStatusError(resp)
 	}
+	body, err := readServiceResponse("root commit", resp.Body)
+	if err != nil {
+		return UpdateCommitUnknown, err
+	}
 	var result RootState
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&result); err != nil {
 		return UpdateCommitUnknown, fmt.Errorf("decoding root commit response: %w", err)
 	}
 	if result.Hash != hash || result.Generation <= generation {

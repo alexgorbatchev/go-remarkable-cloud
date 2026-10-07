@@ -40,7 +40,7 @@ var updateCommitRejections = map[string]struct {
 }
 
 func TestUpdateDocumentFiles(t *testing.T) {
-	for _, failure := range []string{"", "stale", "upload", "verify", "postverify", "root-conflict", "root-response", "association", "foreign", "duplicate", "delimiter", "no-files", "root-read", "document-read", "root-401", "root-401-renew-fails", "root-403", "root-400"} {
+	for _, failure := range []string{"", "stale", "upload", "verify", "postverify", "root-conflict", "root-response", "root-response-padded", "association", "foreign", "duplicate", "delimiter", "no-files", "root-read", "document-read", "root-401", "root-401-renew-fails", "root-403", "root-400"} {
 		t.Run(failure, func(t *testing.T) {
 			original := []byte("background")
 			ink := []byte("native ink")
@@ -108,6 +108,13 @@ func TestUpdateDocumentFiles(t *testing.T) {
 							if _, err := fmt.Fprint(w, "invalid JSON"); err != nil {
 								t.Error(err)
 							}
+							return
+						}
+						if failure == "root-response-padded" {
+							// A confirming answer padded past the service response limit is never read in
+							// full; the client stops reading and closes, so these writes may fail.
+							_, _ = fmt.Fprint(w, strings.Repeat(" ", 1<<20))
+							_ = json.NewEncoder(w).Encode(root)
 							return
 						}
 					}
@@ -197,7 +204,7 @@ func TestUpdateDocumentFiles(t *testing.T) {
 				if failure == "stale" && puts != 0 {
 					t.Fatal("stale update uploaded data")
 				}
-				if failure == "root-response" && result.State != "commit-unknown" {
+				if (failure == "root-response" || failure == "root-response-padded") && result.State != "commit-unknown" {
 					t.Fatalf("lost uncertain commit state: %+v", result)
 				}
 				if failure == "association" && result.State != "committed" {
@@ -220,7 +227,7 @@ func TestUpdateDocumentFiles(t *testing.T) {
 						}
 					}
 				}
-				if failure != "association" && failure != "root-response" && failure != "postverify" && root.Hash != rootHash {
+				if failure != "association" && failure != "root-response" && failure != "root-response-padded" && failure != "postverify" && root.Hash != rootHash {
 					t.Fatal("failed staging changed root")
 				}
 				return

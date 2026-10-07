@@ -3,7 +3,6 @@ package cloud
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -65,7 +64,7 @@ func DiscoverEndpoints(ctx context.Context, client *http.Client, discoveryURL st
 		return endpoints, statusErr
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := readServiceResponse("discovery", resp.Body)
 	if err != nil {
 		return endpoints, err
 	}
