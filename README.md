@@ -20,6 +20,7 @@
 # How it Really Works
 
 - Metadata download and JSON decoding failures return contextual errors. Listings return an error rather than incomplete results when an item's manifest or metadata cannot be read.
+- `Item.GetContent` reads the item manifest when the item's known entries have no `.content` file, as in a flattened root. A failed manifest download returns its own error, such as a `*StatusError` for a 5xx status, or one for a 401 that also matches `ErrUnauthorized`; it matches `ErrItemNotFound` only when the manifest is missing (a 404 or no schema hash) or lists no `.content` entry.
 
 - When a cache directory is configured via `WithCacheDir`, `GetBlob` checks for `$CACHE_DIR/blobs/<hash>` before making network calls and writes new blobs atomically using temporary files.
 - For nested root manifests, `ResolveByID` reads the root state, root manifest, matching item's manifest, and metadata. Other items' metadata is not fetched; cached blobs can avoid download requests. Flattened root manifests use the listing path.
