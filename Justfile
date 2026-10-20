@@ -10,3 +10,7 @@ lint:
 
 # Run linter and test suite
 check: lint test
+
+# Download project dependencies for local development
+setup:
+    go mod download
