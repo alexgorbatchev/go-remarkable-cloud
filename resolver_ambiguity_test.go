@@ -136,8 +136,6 @@ func TestResolveReportsAmbiguousNamesInStableOrder(t *testing.T) {
 		{ID: "doc-notes-root", FolderPath: ""},
 		{ID: "doc-notes-archive", FolderPath: "Archive"},
 		{ID: "doc-notes-proj", FolderPath: "Work/Projects"},
-		{ID: "doc-notes-old", FolderPath: "", Unreachable: true},
-		{ID: "doc-notes-old-sub", FolderPath: "Sub", Unreachable: true},
 	}
 	projectFolders := []candidateView{
 		{ID: "folder-proj-a", FolderPath: "Work"},

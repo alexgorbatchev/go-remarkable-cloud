@@ -1,120 +1,12 @@
 package cloud
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 )
-
-// ItemType represents whether an item is a document or collection (folder).
-type ItemType string
-
-const (
-	// ItemTypeDocument represents a document/notebook/PDF/EPUB item.
-	ItemTypeDocument ItemType = "DocumentType"
-
-	// ItemTypeCollection represents a folder/collection.
-	ItemTypeCollection ItemType = "CollectionType"
-)
-
-// ItemMetadata corresponds to the JSON structure stored in {id}.metadata.
-type ItemMetadata struct {
-	VisibleName  string   `json:"visibleName"`
-	Type         ItemType `json:"type"`
-	Parent       string   `json:"parent"`
-	Deleted      bool     `json:"deleted"`
-	LastModified string   `json:"lastModified"`
-	Version      int      `json:"version"`
-}
-
-// Item represents a document or collection in the reMarkable cloud.
-type Item struct {
-	ID       string        `json:"id"`
-	Hash     string        `json:"hash"`
-	Metadata ItemMetadata  `json:"metadata"`
-	Entries  []SchemaEntry `json:"entries,omitempty"`
-
-	client *Client
-}
-
-// Client returns the client associated with the item, if any.
-func (it *Item) Client() *Client {
-	return it.client
-}
-
-// BindClient associates a client with the item.
-func (it *Item) BindClient(client *Client) {
-	it.client = client
-}
-
-// IsDocument returns true if the item is a document.
-func (it *Item) IsDocument() bool {
-	return it.Metadata.Type == ItemTypeDocument
-}
-
-// IsCollection returns true if the item is a collection (folder).
-func (it *Item) IsCollection() bool {
-	return it.Metadata.Type == ItemTypeCollection
-}
-
-// GetManifest fetches the item's document schema manifest if a schema hash is known.
-func (it *Item) GetManifest(ctx context.Context) (*Manifest, error) {
-	if it.client == nil {
-		return nil, fmt.Errorf("no client bound to item")
-	}
-
-	hash := it.Hash
-	if hash == "" {
-		// Look for .docSchema in item entries
-		for _, e := range it.Entries {
-			if strings.HasSuffix(e.ID, ".docSchema") {
-				hash = e.Hash
-				break
-			}
-		}
-	}
-	if hash == "" {
-		return nil, fmt.Errorf("%w: missing schema hash for item %s", ErrItemNotFound, it.ID)
-	}
-
-	return it.client.GetManifest(ctx, hash, fmt.Sprintf("%s.docSchema", it.ID))
-}
-
-// GetContent downloads and parses the item's {id}.content file.
-func (it *Item) GetContent(ctx context.Context) (*DocumentContent, error) {
-	if it.client == nil {
-		return nil, fmt.Errorf("no client bound to item")
-	}
-
-	contentEntry := it.FindEntrySuffix(".content")
-	if contentEntry == nil {
-		// Attempt manifest lookup first
-		m, err := it.GetManifest(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get manifest for content of %s: %w", it.ID, err)
-		}
-		contentEntry = m.FindSuffix(".content")
-	}
-	if contentEntry == nil {
-		return nil, fmt.Errorf("%w: content entry not found for item %s", ErrItemNotFound, it.ID)
-	}
-
-	return it.client.GetDocumentContent(ctx, contentEntry.Hash, contentEntry.ID)
-}
-
-// FindEntrySuffix finds an entry in the item's known entries matching the suffix.
-func (it *Item) FindEntrySuffix(suffix string) *SchemaEntry {
-	for i := range it.Entries {
-		if strings.HasSuffix(it.Entries[i].ID, suffix) {
-			return &it.Entries[i]
-		}
-	}
-	return nil
-}
 
 // ListOptions configures item listing behavior.
 type ListOptions struct {
@@ -140,16 +32,42 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		opt(&options)
 	}
 
-	rootState, err := c.GetRootState(ctx)
+	root, err := c.rootManifest(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get root state: %w", err)
+		return nil, err
 	}
+	items, err := c.listFromManifest(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	if !options.IncludeDeleted {
+		items = liveItems(items)
+	}
+	return items, nil
+}
 
-	rootManifest, err := c.GetManifest(ctx, rootState.Hash, "root.docSchema")
+func (c *Client) rootManifest(ctx context.Context) (*Manifest, error) {
+	state, err := c.GetRootState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := c.GetManifest(ctx, state.Hash, "root.docSchema")
 	if err != nil {
 		return nil, fmt.Errorf("get root manifest: %w", err)
 	}
+	return manifest, nil
+}
 
+func flatRoot(root *Manifest) bool {
+	for _, entry := range root.Entries {
+		if entry.ID != "." && strings.Contains(entry.ID, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) listFromManifest(ctx context.Context, rootManifest *Manifest) ([]*Item, error) {
 	// Schema v4's aggregate record describes the manifest, not a cloud item.
 	entries := make([]SchemaEntry, 0, len(rootManifest.Entries))
 	for _, entry := range rootManifest.Entries {
@@ -158,16 +76,7 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 		}
 	}
 
-	// Check if root manifest already lists sub-files (.metadata, .docSchema) directly
-	hasSubfiles := false
-	for _, e := range entries {
-		if strings.Contains(e.ID, ".") {
-			hasSubfiles = true
-			break
-		}
-	}
-
-	if hasSubfiles {
+	if flatRoot(rootManifest) {
 		// Group entries by item UUID prefix
 		type itemGroup struct {
 			id           string
@@ -221,10 +130,6 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 				meta.Type = ItemTypeDocument
 			}
 
-			if !options.IncludeDeleted && (meta.Deleted || meta.Parent == "trash") {
-				continue
-			}
-
 			schemaHash := g.schemaHash
 			if schemaHash == "" && len(g.entries) > 0 {
 				schemaHash = g.entries[0].Hash
@@ -256,35 +161,8 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			itemManifest, err := c.GetManifest(ctx, e.Hash, e.ID+".docSchema")
-			if err != nil {
-				resultsChan <- itemResult{err: fmt.Errorf("get item %s manifest: %w", e.ID, err)}
-				return
-			}
-
-			var meta ItemMetadata
-			metaEntry := itemManifest.FindSuffix(".metadata")
-			if metaEntry != nil {
-				meta, err = c.readItemMetadata(ctx, metaEntry.Hash, metaEntry.ID)
-				if err != nil {
-					resultsChan <- itemResult{err: err}
-					return
-				}
-			}
-
-			if meta.VisibleName == "" {
-				meta.VisibleName = e.ID
-			}
-
-			resultsChan <- itemResult{
-				item: &Item{
-					ID:       e.ID,
-					Hash:     e.Hash,
-					Metadata: meta,
-					Entries:  itemManifest.Entries,
-					client:   c,
-				},
-			}
+			item, err := c.itemFromEntry(ctx, e)
+			resultsChan <- itemResult{item: item, err: err}
 		}(entry)
 	}
 
@@ -297,9 +175,6 @@ func (c *Client) ListItems(ctx context.Context, opts ...ListOption) ([]*Item, er
 			continue
 		}
 		if res.item != nil {
-			if !options.IncludeDeleted && (res.item.Metadata.Parent == "trash" || res.item.Metadata.Deleted) {
-				continue
-			}
 			items = append(items, res.item)
 		}
 	}
@@ -320,210 +195,4 @@ func (c *Client) readItemMetadata(ctx context.Context, hash, filename string) (I
 		return meta, fmt.Errorf("decode metadata %s: %w", filename, err)
 	}
 	return meta, nil
-}
-
-// ResolveByID finds an item matching the exact UUID without listing all items.
-func (c *Client) ResolveByID(ctx context.Context, id string) (*Item, error) {
-	rootState, err := c.GetRootState(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get root state: %w", err)
-	}
-	rootManifest, err := c.GetManifest(ctx, rootState.Hash, "root.docSchema")
-	if err != nil {
-		return nil, fmt.Errorf("get root manifest: %w", err)
-	}
-	entry := rootManifest.Find(id)
-	if entry != nil {
-		itemManifest, err := c.GetManifest(ctx, entry.Hash, id+".docSchema")
-		if err != nil {
-			return nil, fmt.Errorf("get item %s manifest: %w", id, err)
-		}
-		var meta ItemMetadata
-		if metaEntry := itemManifest.FindSuffix(".metadata"); metaEntry != nil {
-			meta, err = c.readItemMetadata(ctx, metaEntry.Hash, metaEntry.ID)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if meta.VisibleName == "" {
-			meta.VisibleName = id
-		}
-		return &Item{
-			ID:       id,
-			Hash:     entry.Hash,
-			Metadata: meta,
-			Entries:  itemManifest.Entries,
-			client:   c,
-		}, nil
-	}
-
-	// Flattened roots require grouping subfiles through the listing path.
-	items, err := c.ListItems(ctx, WithIncludeDeleted(true))
-	if err != nil {
-		return nil, err
-	}
-	for _, it := range items {
-		if it.ID == id {
-			return it, nil
-		}
-	}
-	return nil, fmt.Errorf("%w: id %s", ErrItemNotFound, id)
-}
-
-// ResolveByName finds the live item whose visibleName exactly matches name. Live items are the
-// ones ListItems returns by default: not deleted and not directly in the trash. When several live
-// items share the name, it returns an *AmbiguousNameError whose Candidates hold every one of them.
-func (c *Client) ResolveByName(ctx context.Context, name string) (*Item, error) {
-	items, err := c.ListItems(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var matches []*Item
-	for _, it := range items {
-		if it.Metadata.VisibleName == name {
-			matches = append(matches, it)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("%w: name %s", ErrItemNotFound, name)
-	case 1:
-		return matches[0], nil
-	}
-	return nil, newItemTree(items).ambiguous(name, name, matches)
-}
-
-// ResolveByPath resolves a hierarchical path (e.g. "Folder/Subfolder/Document") through live
-// items, starting at the root. Every segment but the last matches only collections. When a
-// segment matches several live items, it returns an *AmbiguousNameError for that segment.
-func (c *Client) ResolveByPath(ctx context.Context, path string) (*Item, error) {
-	cleaned := strings.Trim(strings.TrimSpace(path), "/")
-	if cleaned == "" {
-		return nil, fmt.Errorf("%w: empty path", ErrItemNotFound)
-	}
-
-	segments := strings.Split(cleaned, "/")
-	items, err := c.ListItems(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	tree := newItemTree(items)
-	currentParent := ""
-	var currentItem *Item
-
-	for idx, seg := range segments {
-		isLast := idx == len(segments)-1
-		var matches []*Item
-		for _, ch := range tree.children[currentParent] {
-			if ch.Metadata.VisibleName == seg && (isLast || ch.IsCollection()) {
-				matches = append(matches, ch)
-			}
-		}
-
-		switch len(matches) {
-		case 0:
-			return nil, fmt.Errorf("%w: path segment '%s' in '%s'", ErrItemNotFound, seg, path)
-		case 1:
-		default:
-			return nil, tree.ambiguous(path, seg, matches)
-		}
-
-		currentItem = matches[0]
-		currentParent = currentItem.ID
-	}
-
-	return currentItem, nil
-}
-
-// itemTree indexes live items by ID and by parent so lookups walk folders the way ResolveByPath does.
-type itemTree struct {
-	byID     map[string]*Item
-	children map[string][]*Item
-}
-
-// newItemTree indexes the default ListItems result, which already excludes deleted and trashed items.
-func newItemTree(items []*Item) *itemTree {
-	t := &itemTree{
-		byID:     make(map[string]*Item, len(items)),
-		children: make(map[string][]*Item),
-	}
-	for _, it := range items {
-		t.byID[it.ID] = it
-		t.children[it.Metadata.Parent] = append(t.children[it.Metadata.Parent], it)
-	}
-	return t
-}
-
-// folderPath joins the names of the live collections above it, top level first. It reports false
-// when the walk stops at a parent that is not a live collection before reaching the root.
-func (t *itemTree) folderPath(it *Item) (string, bool) {
-	var names []string
-	reachable := true
-	seen := map[string]bool{it.ID: true}
-	for parent := it.Metadata.Parent; parent != ""; {
-		folder, ok := t.byID[parent]
-		if !ok || !folder.IsCollection() || seen[parent] {
-			reachable = false
-			break
-		}
-		seen[parent] = true
-		names = append(names, folder.Metadata.VisibleName)
-		parent = folder.Metadata.Parent
-	}
-	slices.Reverse(names)
-	return strings.Join(names, "/"), reachable
-}
-
-// ambiguous orders matches independently of listing order and wraps them in an AmbiguousNameError.
-func (t *itemTree) ambiguous(query, name string, matches []*Item) *AmbiguousNameError {
-	candidates := make([]AmbiguousCandidate, 0, len(matches))
-	for _, it := range matches {
-		folder, reachable := t.folderPath(it)
-		candidates = append(candidates, AmbiguousCandidate{Item: it, FolderPath: folder, Unreachable: !reachable})
-	}
-	slices.SortFunc(candidates, func(a, b AmbiguousCandidate) int {
-		if a.Unreachable != b.Unreachable {
-			if a.Unreachable {
-				return 1
-			}
-			return -1
-		}
-		return cmp.Or(strings.Compare(a.FolderPath, b.FolderPath), strings.Compare(a.Item.ID, b.Item.ID))
-	})
-	return &AmbiguousNameError{Query: query, Name: name, Candidates: candidates}
-}
-
-// Resolve resolves an item by UUID, hierarchical path, or visibleName. A query containing "/" is
-// resolved as a path; any other query is tried as an ID, then as a name, then as a single-segment
-// path. An *AmbiguousNameError from the path or name lookup is returned unchanged.
-func (c *Client) Resolve(ctx context.Context, query string) (*Item, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, fmt.Errorf("%w: empty query", ErrItemNotFound)
-	}
-
-	// 1. Try exact UUID if format resembles UUID or ID
-	if !strings.Contains(query, "/") {
-		if it, err := c.ResolveByID(ctx, query); err == nil {
-			return it, nil
-		} else if !errors.Is(err, ErrItemNotFound) {
-			return nil, err
-		}
-	}
-
-	// 2. If path contains slash, resolve as hierarchical path
-	if strings.Contains(query, "/") {
-		return c.ResolveByPath(ctx, query)
-	}
-
-	// 3. Try visible name
-	if it, err := c.ResolveByName(ctx, query); err == nil {
-		return it, nil
-	} else if !errors.Is(err, ErrItemNotFound) {
-		return nil, err
-	}
-
-	// 4. Fall back to single-segment path
-	return c.ResolveByPath(ctx, query)
 }

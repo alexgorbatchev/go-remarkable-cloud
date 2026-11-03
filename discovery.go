@@ -3,6 +3,8 @@ package cloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -38,8 +40,13 @@ func DefaultEndpoints() *Endpoints {
 }
 
 // DiscoverEndpoints queries the discovery endpoint or returns fallback hosts if discovery fails.
-func DiscoverEndpoints(ctx context.Context, client *http.Client, discoveryURL string) (*Endpoints, error) {
-	endpoints := DefaultEndpoints()
+func DiscoverEndpoints(ctx context.Context, client *http.Client, discoveryURL string) (endpoints *Endpoints, err error) {
+	defer func() {
+		if err != nil && !errors.Is(err, ErrDiscoveryFailed) {
+			err = fmt.Errorf("%w: %w", ErrDiscoveryFailed, err)
+		}
+	}()
+	endpoints = DefaultEndpoints()
 	if client == nil {
 		client = http.DefaultClient
 	}
