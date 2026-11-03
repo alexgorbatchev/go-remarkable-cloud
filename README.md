@@ -12,10 +12,12 @@
 
 # How It Works
 
-- Loads existing credentials from `$XDG_CONFIG_HOME/remarkable-cli/config.json` or `~/.rmapi`, or pairs a new device token.
+- Loads rmapi `key: value` credentials from the ordered paths returned by `CandidateConfigPaths`, or pairs a new device token. JSON credentials produce a format error.
 - Queries service discovery endpoints to resolve active auth and storage hosts.
 - Fetches the root generation state and line-delimited schema manifests.
 - Downloads content-addressed file blobs (PDF stationery, EPUB, content schemas, `.rm` vector strokes) and deserializes metadata.
+
+Credential lookup checks `$RMAPI_CONFIG` first (an existing file, or `.rmapi`, `.rmapi.conf`, `rmapi/.rmapi`, and `rmapi/rmapi.conf` inside that directory), then `~/.rmapi`, `~/.rmapi.conf`, `$XDG_CONFIG_HOME/rmapi/{rmapi.conf,.rmapi}` (defaulting XDG to `~/.config`), and `~/Library/Application Support/rmapi/{rmapi.conf,.rmapi}`. Applications can select another rmapi-format file with `WithConfigFile`.
 
 # How it Really Works
 

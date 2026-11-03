@@ -2,6 +2,7 @@ package cloud_test
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,18 @@ import (
 
 	cloud "github.com/alexgorbatchev/go-remarkable-cloud"
 )
+
+func TestParseConfigRejectsMalformedCredentials(t *testing.T) {
+	for _, input := range []string{`{"devicetoken":"private-value"}`, "{\n\"devicetoken\":\"private-value\"\n}", "devicetoken private-value", `"devicetoken": "private-value"`} {
+		_, err := cloud.ParseConfig(strings.NewReader(input))
+		if !errors.Is(err, cloud.ErrInvalidConfig) {
+			t.Errorf("expected format error: %v", err)
+		}
+		if err != nil && strings.Contains(err.Error(), "private-value") {
+			t.Fatal("format error leaked credentials")
+		}
+	}
+}
 
 func TestParseConfig(t *testing.T) {
 	input := `

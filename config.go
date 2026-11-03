@@ -9,10 +9,11 @@ import (
 	"strings"
 )
 
-// Config represents stored credentials compatible with rmapi.
+// Config holds credentials stored as rmapi key: value lines by ParseConfig and
+// WriteConfig. JSON credentials are not supported.
 type Config struct {
-	DeviceToken string `json:"devicetoken"`
-	UserToken   string `json:"usertoken"`
+	DeviceToken string
+	UserToken   string
 }
 
 // ParseConfig parses rmapi-compatible key-value configuration from a reader.
@@ -23,14 +24,16 @@ type Config struct {
 func ParseConfig(r io.Reader) (*Config, error) {
 	cfg := &Config{}
 	scanner := bufio.NewScanner(r)
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
+		if len(parts) != 2 || strings.ContainsAny(parts[0], "{}[]\"") {
+			return nil, fmt.Errorf("%w: line %d: expected rmapi key: value text, not JSON", ErrInvalidConfig, lineNumber)
 		}
 		key := strings.ToLower(strings.TrimSpace(parts[0]))
 		val := strings.TrimSpace(parts[1])

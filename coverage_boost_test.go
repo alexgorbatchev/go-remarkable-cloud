@@ -69,16 +69,8 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 		t.Errorf("expected error for nonexistent file, got %v", cfg)
 	}
 
-	// 5. WriteConfigFile JSON and rmapi format
+	// 5. WriteConfigFile rmapi format
 	tmpDir := t.TempDir()
-	jsonPath := filepath.Join(tmpDir, "config.json")
-	if err := cloud.WriteConfigFile(jsonPath, &cloud.Config{DeviceToken: "dev", UserToken: "usr"}); err != nil {
-		t.Fatalf("writing json config: %v", err)
-	}
-	loadedCfg, err := cloud.ReadConfigFile(jsonPath)
-	if err != nil || loadedCfg.DeviceToken != "dev" || loadedCfg.UserToken != "usr" {
-		t.Fatalf("failed reading json config: %v, %+v", err, loadedCfg)
-	}
 
 	rmapiPath := filepath.Join(tmpDir, ".rmapi")
 	if err := cloud.WriteConfigFile(rmapiPath, &cloud.Config{DeviceToken: "dev2", UserToken: "usr2"}); err != nil {
