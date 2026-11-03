@@ -65,7 +65,7 @@ func WithStorageHost(storageHost string) Option {
 	}
 }
 
-// WithAutoRenew controls whether the client automatically mints a new user token on 401.
+// WithAutoRenew controls whether the client automatically mints a new user token on 401 or 403.
 func WithAutoRenew(autoRenew bool) Option {
 	return func(c *Client) {
 		c.autoRenew = autoRenew
@@ -303,7 +303,7 @@ func (c *Client) GetManifest(ctx context.Context, hash, filename string) (*Manif
 }
 
 // GetBlob downloads and verifies up to 512 MiB for a lowercase SHA-256 hash and rm-filename.
-// Document schemas use their ordered entry hashes; other files use their content bytes.
+// Document schemas and version-3 roots use ordered entry hashes; version-4 roots and other files use their bytes.
 // Cache directories and files are created with modes 0700 and 0600, respectively.
 func (c *Client) GetBlob(ctx context.Context, hash, filename string) ([]byte, error) {
 	return c.getBlob(ctx, hash, filename, true)

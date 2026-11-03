@@ -23,7 +23,10 @@ func validBlobHash(hash string) bool {
 
 func verifyBlob(hash, filename string, data []byte) error {
 	actual := contentHash(data)
-	if strings.HasSuffix(filename, ".docSchema") && filename != "root.docSchema" {
+	// Schema v3 roots use the same child-hash digest as document schemas.
+	// Schema v4 roots instead hash their complete serialized bytes.
+	v3 := bytes.HasPrefix(data, []byte("3\n"))
+	if strings.HasSuffix(filename, ".docSchema") && (filename != "root.docSchema" || v3) {
 		manifest, err := ParseManifest(hash, bytes.NewReader(data))
 		if err != nil {
 			return err
