@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -69,7 +68,7 @@ func newShuffledListingClient(t *testing.T, layout string, items []listingItem, 
 		}
 		lines = append(lines, fmt.Sprintf("%s:%s:%d:%d", entry.Hash, entry.ID, entry.Subfiles, entry.Size))
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		if r.URL.Path == "/sync/v3/root" {
@@ -79,9 +78,8 @@ func newShuffledListingClient(t *testing.T, layout string, items []listingItem, 
 			return
 		}
 		blobs.handler(t, "")(w, r)
-	}))
-	t.Cleanup(server.Close)
-	client, err := cloud.NewClient(cloud.WithStorageHost(server.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}))
+	})
+	client, err := cloud.NewClient(cloud.WithHTTPClient(&http.Client{Transport: handlerTransport{handler}}), cloud.WithStorageHost("https://cloud.test"), cloud.WithConfig(&cloud.Config{UserToken: "test"}))
 	if err != nil {
 		t.Fatalf("failed creating client: %v", err)
 	}

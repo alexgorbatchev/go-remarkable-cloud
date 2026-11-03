@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -71,4 +72,17 @@ func decodedFixtureHash(t *testing.T, hash string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// handlerTransport exercises request/response behavior without allocating TCP ports.
+// Tests of transport failures and cancellation use actual servers separately.
+type handlerTransport struct{ handler http.Handler }
+
+func (tr handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	recorder := httptest.NewRecorder()
+	tr.handler.ServeHTTP(recorder, req)
+	return recorder.Result(), nil
 }
