@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -22,7 +23,7 @@ func (c *Client) itemFromEntry(ctx context.Context, entry SchemaEntry) (*Item, e
 	if meta.VisibleName == "" {
 		meta.VisibleName = entry.ID
 	}
-	return &Item{ID: entry.ID, Hash: entry.Hash, Metadata: meta, Entries: manifest.Entries, client: c}, nil
+	return &Item{ID: entry.ID, Hash: entry.Hash, Metadata: meta, Entries: slices.Clone(manifest.Entries), client: c, manifest: manifest}, nil
 }
 
 // ResolveByID finds an exact ID, including deleted items. Nested roots need only

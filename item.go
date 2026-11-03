@@ -3,6 +3,7 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -34,7 +35,8 @@ type Item struct {
 	Metadata ItemMetadata  `json:"metadata"`
 	Entries  []SchemaEntry `json:"entries,omitempty"`
 
-	client *Client
+	client   *Client
+	manifest *Manifest
 }
 
 // Client returns the client associated with the item, if any.
@@ -57,10 +59,14 @@ func (it *Item) IsCollection() bool {
 	return it.Metadata.Type == ItemTypeCollection
 }
 
-// GetManifest fetches the item's document schema manifest if a schema hash is known.
+// GetManifest returns the resolved schema snapshot when its hash still matches,
+// or fetches the schema by hash. Returned entries are owned by the caller.
 func (it *Item) GetManifest(ctx context.Context) (*Manifest, error) {
 	if it.client == nil {
 		return nil, fmt.Errorf("no client bound to item")
+	}
+	if it.manifest != nil && it.manifest.Hash == it.Hash {
+		return &Manifest{Hash: it.manifest.Hash, Entries: slices.Clone(it.manifest.Entries)}, nil
 	}
 
 	hash := it.Hash
