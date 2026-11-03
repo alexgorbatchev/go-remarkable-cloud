@@ -8,7 +8,7 @@ Pure Go library for the reMarkable Cloud Sync v3 API with zero external dependen
   - `config.go`: `~/.rmapi` key-value configuration loader and serializer.
   - `auth.go`: Device pairing and session token renewal (`POST /token/json/2/...`).
   - `discovery.go`: Dynamic service discovery with resilient fallback hosts.
-  - `sync.go`: Sync v3 root state, line-delimited schema records, and document content models.
+  - `sync.go`: Sync v3 root state and line-delimited schema records. `content.go` and `content_json.go` hold lossless document/page/register models; preserve unknown fields and the distinction between absent, null, and zero values.
   - `client.go`: Thread-safe client orchestrating automatic token renewals, blob fetching, and manifests.
   - `item.go` and `resolver*.go`: Document/collection hierarchy resolution by UUID, path (`"Folder/Subfolder/Doc"`), or `visibleName`. A name or path segment that matches several live items returns `*AmbiguousNameError` with every candidate in a fixed order; never return the first listing match, because `ListItems` order varies between calls.
   - `errors.go`: Typed sentinel errors (`ErrUnauthorized`, `ErrItemNotFound`, `ErrInvalidSchema`, etc.) and `StatusError`, which every non-success HTTP response returns; it unwraps to the sentinel that classifies the status (401/403 to `ErrUnauthorized`). `AmbiguousNameError` unwraps to `ErrAmbiguousName` and must not match `ErrItemNotFound`, so `Resolve` stops instead of falling back. Its `Error()` states only the name, the query when it differs, and the candidate count; never inline candidates there, because consumers render `Candidates` from the typed fields.

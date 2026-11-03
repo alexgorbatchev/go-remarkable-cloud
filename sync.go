@@ -2,7 +2,6 @@ package cloud
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -156,72 +155,5 @@ func WriteManifest(w io.Writer, manifest *Manifest) error {
 			return err
 		}
 	}
-	return nil
-}
-
-// RedirValue represents the redirection index of a page in a document.
-type RedirValue struct {
-	Value int `json:"value"`
-}
-
-// DeletedValue represents deletion status of a page.
-type DeletedValue struct {
-	Value int `json:"value"`
-}
-
-// CPage represents a page record inside a reMarkable .content file.
-type CPage struct {
-	ID      string        `json:"id"`
-	Redir   *RedirValue   `json:"redir,omitempty"`
-	Deleted *DeletedValue `json:"deleted,omitempty"`
-}
-
-// CPages captures the pages array inside document content.
-type CPages struct {
-	Pages    []CPage `json:"pages,omitempty"`
-	Original struct {
-		Pages []CPage `json:"pages,omitempty"`
-	} `json:"original,omitempty"`
-}
-
-// DocumentContent represents the parsed JSON structure of a {id}.content file.
-type DocumentContent struct {
-	CPages            CPages         `json:"cPages,omitempty"`
-	FileType          string         `json:"fileType,omitempty"`
-	FormatVersion     int            `json:"formatVersion,omitempty"`
-	PageCount         int            `json:"pageCount,omitempty"`
-	Pages             []string       `json:"pages,omitempty"`
-	Orientation       string         `json:"orientation,omitempty"`
-	CoverPageNumber   int            `json:"coverPageNumber,omitempty"`
-	OriginalPageCount int            `json:"originalPageCount,omitempty"`
-	Extra             map[string]any `json:"-"`
-}
-
-// UnmarshalJSON unmarshals content JSON and captures any additional fields into Extra.
-func (dc *DocumentContent) UnmarshalJSON(data []byte) error {
-	type Alias DocumentContent
-	aux := &struct {
-		*Alias
-	}{
-		Alias: (*Alias)(dc),
-	}
-	if err := json.Unmarshal(data, aux); err != nil {
-		return err
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	// Remove standard fields from extra map
-	delete(raw, "cPages")
-	delete(raw, "fileType")
-	delete(raw, "formatVersion")
-	delete(raw, "pageCount")
-	delete(raw, "pages")
-	delete(raw, "orientation")
-	delete(raw, "coverPageNumber")
-	delete(raw, "originalPageCount")
-	dc.Extra = raw
 	return nil
 }

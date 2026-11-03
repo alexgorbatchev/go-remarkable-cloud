@@ -123,7 +123,7 @@ func TestDocumentContent_Unmarshal(t *testing.T) {
 	if dc.CPages.Pages[1].Deleted == nil || dc.CPages.Pages[1].Deleted.Value != 1 {
 		t.Errorf("unexpected deleted value on page 1: %+v", dc.CPages.Pages[1].Deleted)
 	}
-	if dc.Extra["customKey"] != "customValue" {
+	if string(dc.Extra["customKey"]) != `"customValue"` {
 		t.Errorf("expected extra field customKey='customValue', got '%v'", dc.Extra["customKey"])
 	}
 }
