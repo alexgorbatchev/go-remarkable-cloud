@@ -32,11 +32,15 @@ type snapshotServer struct {
 func newSnapshotServer(t *testing.T, race string) (*snapshotServer, *cloud.Client) {
 	t.Helper()
 	pdf, ink, content := []byte("PDF background"), []byte("native ink"), []byte(`{"tags":[]}`)
-	doc := []byte(fmt.Sprintf("3\n%s:0:doc.pdf:0:%d\n%s:0:doc/page.rm:0:%d\n%s:0:doc.content:0:%d\n", blobHash(pdf), len(pdf), blobHash(ink), len(ink), blobHash(content), len(content)))
-	source := []byte("source snapshot")
-	root := []byte(fmt.Sprintf("4\n0:.:2:100\n%s:0:doc:3:50\n%s:0:source:1:50\n", blobHash(doc), blobHash(source)))
-	s := &snapshotServer{t: t, root: cloud.RootState{Hash: blobHash(root), Generation: 5, SchemaVersion: 4}, docHash: blobHash(doc), sourceHash: blobHash(source), race: race,
-		blobs: map[string][]byte{blobHash(root): root, blobHash(doc): doc, blobHash(source): source, blobHash(pdf): pdf, blobHash(ink): ink, blobHash(content): content}}
+	fixtures := blobFixture{}
+	docEntry := fixtures.manifest("doc", false,
+		fixtures.add("doc.pdf", string(pdf)), fixtures.add("doc/page.rm", string(ink)), fixtures.add("doc.content", string(content)))
+	source := fixtures.add("source", "source snapshot")
+	root := fixtures.manifest("root", true, docEntry, source)
+	s := &snapshotServer{t: t, root: cloud.RootState{Hash: root.Hash, Generation: 5, SchemaVersion: 4}, docHash: docEntry.Hash, sourceHash: source.Hash, race: race, blobs: make(map[string][]byte)}
+	for hash, data := range fixtures {
+		s.blobs[hash] = []byte(data)
+	}
 	s.initial = s.root
 	server := httptest.NewServer(http.HandlerFunc(s.serveHTTP))
 	t.Cleanup(server.Close)

@@ -57,26 +57,13 @@ func TestClient_GetRootState(t *testing.T) {
 }
 
 func TestClient_GetManifestAndBlob(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/sync/v3/files/file-hash-123" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
+	blobs := blobFixture{}
+	meta := blobs.add("doc1.metadata", "{}")
+	content := blobs.add("doc1.content", `{"fileType":"pdf","pageCount":10}`)
+	root := blobs.manifest("root", true, meta, content)
+	raw := blobs.add("custom.bin", "raw-blob-content")
+	server := httptest.NewServer(blobs.handler(t, root.Hash))
 
-		filename := r.Header.Get("rm-filename")
-		switch filename {
-		case "root", "root.docSchema":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("meta-hash:doc1.metadata:0:120\ncontent-hash:doc1.content:0:450\n"))
-		case "doc1.content":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"fileType": "pdf", "pageCount": 10}`))
-		default:
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("raw-blob-content"))
-		}
-	}))
 	defer server.Close()
 
 	client, err := cloud.NewClient(
@@ -92,7 +79,7 @@ func TestClient_GetManifestAndBlob(t *testing.T) {
 	ctx := context.Background()
 
 	// Test GetManifest
-	manifest, err := client.GetManifest(ctx, "file-hash-123", "root")
+	manifest, err := client.GetManifest(ctx, root.Hash, "root")
 	if err != nil {
 		t.Fatalf("unexpected error getting manifest: %v", err)
 	}
@@ -101,7 +88,7 @@ func TestClient_GetManifestAndBlob(t *testing.T) {
 	}
 
 	// Test GetBlob
-	blob, err := client.GetBlob(ctx, "file-hash-123", "custom.bin")
+	blob, err := client.GetBlob(ctx, raw.Hash, "custom.bin")
 	if err != nil {
 		t.Fatalf("unexpected error getting blob: %v", err)
 	}
@@ -110,7 +97,7 @@ func TestClient_GetManifestAndBlob(t *testing.T) {
 	}
 
 	// Test GetDocumentContent
-	dc, err := client.GetDocumentContent(ctx, "file-hash-123", "doc1.content")
+	dc, err := client.GetDocumentContent(ctx, content.Hash, "doc1.content")
 	if err != nil {
 		t.Fatalf("unexpected error getting document content: %v", err)
 	}

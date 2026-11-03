@@ -14,13 +14,14 @@ import (
 
 func TestClient_BlobDiskCaching(t *testing.T) {
 	var requestCount atomic.Int64
+	hash := fixtureHash("sample-blob-data")
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount.Add(1)
 		switch r.URL.Path {
 		case "/token/v2/user":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("mock-token"))
-		case "/sync/v3/files/sample-hash":
+		case "/sync/v3/files/" + hash:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("sample-blob-data"))
 		default:
@@ -43,7 +44,7 @@ func TestClient_BlobDiskCaching(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. First fetch: should make an HTTP request and save to cache
-	data1, err := client.GetBlob(ctx, "sample-hash", "test.pdf")
+	data1, err := client.GetBlob(ctx, hash, "test.pdf")
 	if err != nil {
 		t.Fatalf("first GetBlob failed: %v", err)
 	}
@@ -55,13 +56,13 @@ func TestClient_BlobDiskCaching(t *testing.T) {
 	}
 
 	// Verify file is on disk
-	cachedFile := filepath.Join(cacheDir, "blobs", "sample-hash")
+	cachedFile := filepath.Join(cacheDir, "blobs", hash)
 	if _, err := os.Stat(cachedFile); err != nil {
 		t.Fatalf("expected cached file at %s, got: %v", cachedFile, err)
 	}
 
 	// 2. Second fetch: should hit disk cache, 0 additional HTTP requests!
-	data2, err := client.GetBlob(ctx, "sample-hash", "test.pdf")
+	data2, err := client.GetBlob(ctx, hash, "test.pdf")
 	if err != nil {
 		t.Fatalf("second GetBlob failed: %v", err)
 	}

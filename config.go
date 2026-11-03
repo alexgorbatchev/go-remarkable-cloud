@@ -109,7 +109,11 @@ func ResolveConfigPath(override string) (string, error) {
 	}
 	candidates := CandidateConfigPaths()
 	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+		fi, err := os.Stat(c)
+		if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect config path %s: %w", c, err)
+		}
+		if err == nil && !fi.IsDir() {
 			return c, nil
 		}
 	}
@@ -139,18 +143,17 @@ func WriteConfigFile(path string, cfg *Config) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	tmpFile := path + ".tmp"
-	f, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	f, err := os.CreateTemp(dir, ".credentials-*")
 	if err != nil {
 		return err
 	}
+	tmpFile := f.Name()
+	defer func() { _ = os.Remove(tmpFile) }()
 	if err := WriteConfig(f, cfg); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmpFile)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmpFile)
 		return err
 	}
 	return os.Rename(tmpFile, path)

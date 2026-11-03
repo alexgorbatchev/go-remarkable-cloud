@@ -16,11 +16,15 @@ func TestClient_OptionsAndAccessors(t *testing.T) {
 	customHTTP := &http.Client{}
 	endpoints := cloud.DefaultEndpoints()
 	endpoints.RawHost = "https://example-raw.com"
+	configPath := filepath.Join(t.TempDir(), ".rmapi")
+	if err := cloud.WriteConfigFile(configPath, &cloud.Config{DeviceToken: "device"}); err != nil {
+		t.Fatal(err)
+	}
 
 	c, err := cloud.NewClient(
 		cloud.WithHTTPClient(customHTTP),
 		cloud.WithEndpoints(endpoints),
-		cloud.WithConfigFile("/custom/test/.rmapi"),
+		cloud.WithConfigFile(configPath),
 		cloud.WithStorageHost("https://example-storage.com"),
 	)
 	if err != nil {
@@ -91,6 +95,9 @@ func TestClient_RenewToken_NoDeviceToken(t *testing.T) {
 func TestClient_SaveOnRenew(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, ".rmapi")
+	if err := cloud.WriteConfigFile(confPath, &cloud.Config{DeviceToken: "dev-tok"}); err != nil {
+		t.Fatal(err)
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -129,12 +136,12 @@ func TestClient_GetErrors(t *testing.T) {
 		case "/sync/v3/root":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte("internal root error"))
-		case "/sync/v3/files/notfound":
+		case "/sync/v3/files/" + fixtureHash("missing"):
 			w.WriteHeader(http.StatusNotFound)
-		case "/sync/v3/files/badmanifest":
+		case "/sync/v3/files/" + fixtureHash("invalid:format"):
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("invalid:format"))
-		case "/sync/v3/files/servererror":
+		case "/sync/v3/files/" + fixtureHash("server error"):
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte("gateway error"))
 		}
@@ -155,31 +162,31 @@ func TestClient_GetErrors(t *testing.T) {
 	}
 
 	// 404 manifest
-	_, err = c.GetManifest(ctx, "notfound", "")
+	_, err = c.GetManifest(ctx, fixtureHash("missing"), "")
 	if !errors.Is(err, cloud.ErrItemNotFound) {
 		t.Errorf("expected ErrItemNotFound, got %v", err)
 	}
 
 	// Invalid manifest schema
-	_, err = c.GetManifest(ctx, "badmanifest", "")
+	_, err = c.GetManifest(ctx, fixtureHash("invalid:format"), "")
 	if !errors.Is(err, cloud.ErrInvalidSchema) {
 		t.Errorf("expected ErrInvalidSchema, got %v", err)
 	}
 
 	// 502 manifest
-	_, err = c.GetManifest(ctx, "servererror", "")
+	_, err = c.GetManifest(ctx, fixtureHash("server error"), "")
 	if err == nil || !strings.Contains(err.Error(), "502") {
 		t.Errorf("expected 502 error getting manifest, got %v", err)
 	}
 
 	// 404 blob
-	_, err = c.GetBlob(ctx, "notfound", "file.bin")
+	_, err = c.GetBlob(ctx, fixtureHash("missing"), "file.bin")
 	if !errors.Is(err, cloud.ErrItemNotFound) {
 		t.Errorf("expected ErrItemNotFound, got %v", err)
 	}
 
 	// 502 blob
-	_, err = c.GetBlob(ctx, "servererror", "file.bin")
+	_, err = c.GetBlob(ctx, fixtureHash("server error"), "file.bin")
 	if err == nil || !strings.Contains(err.Error(), "502") {
 		t.Errorf("expected 502 error getting blob, got %v", err)
 	}

@@ -90,22 +90,12 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 	}
 
 	// 6. Fast ResolveByID with mock server
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/token/v2/user":
-			_, _ = w.Write([]byte("mock-token"))
-		case "/sync/v3/root":
-			_, _ = w.Write([]byte(`{"hash":"root-hash","generation":1,"schemaVersion":3}`))
-		case "/sync/v3/files/root-hash":
-			_, _ = w.Write([]byte("doc-hash:doc-target:0:100\n"))
-		case "/sync/v3/files/doc-hash":
-			_, _ = w.Write([]byte("meta-hash:doc-target.metadata:0:50\n"))
-		case "/sync/v3/files/meta-hash":
-			_, _ = w.Write([]byte(`{"visibleName":"Target Note","type":"DocumentType"}`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
+	blobs := blobFixture{}
+	meta := blobs.add("doc-target.metadata", `{"visibleName":"Target Note","type":"DocumentType"}`)
+	doc := blobs.manifest("doc-target", false, meta)
+	root := blobs.manifest("root", true, doc)
+	ts := httptest.NewServer(blobs.handler(t, root.Hash))
+
 	defer ts.Close()
 
 	client, err := cloud.NewClient(
@@ -166,7 +156,7 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 		cloud.WithEndpoints(&cloud.Endpoints{WebappHost: tsContent.URL, StorageHost: tsContent.URL}),
 	)
 	var targetMap map[string]any
-	errBadJSON := clientContent.GetContent(ctx, "any-hash", "file", &targetMap)
+	errBadJSON := clientContent.GetContent(ctx, fixtureHash("not valid json"), "file", &targetMap)
 	if errBadJSON == nil {
 		t.Error("expected error on bad json in GetContent")
 	}
@@ -188,7 +178,7 @@ func TestCoverageBoost_Cloud(t *testing.T) {
 	}
 
 	// 10. GetDocumentContent 404
-	_, errDoc404 := client.GetDocumentContent(ctx, "nonexistent-hash", "nonexistent-file")
+	_, errDoc404 := client.GetDocumentContent(ctx, fixtureHash("missing"), "nonexistent-file")
 	if errDoc404 == nil {
 		t.Error("expected error on 404 in GetDocumentContent")
 	}

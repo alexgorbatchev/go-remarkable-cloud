@@ -2,8 +2,6 @@ package cloud_test
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -13,38 +11,21 @@ import (
 func TestListItemsAggregate(t *testing.T) {
 	for _, layout := range []string{"nested", "flat", "empty"} {
 		t.Run(layout, func(t *testing.T) {
-			root := "4\n0:.:75:211191896\n"
+			blobs := blobFixture{}
+			docMeta := blobs.add("doc.metadata", `{"visibleName":"2026 - Daily","type":"DocumentType","parent":"folder","lastModified":"1790799655380"}`)
+			folderMeta := blobs.add("folder.metadata", `{"visibleName":"Plans","type":"CollectionType"}`)
+			var entries []cloud.SchemaEntry
 			switch layout {
 			case "nested":
-				root += "doc-schema:doc:0:100\nfolder-schema:folder:0:100\n"
+				entries = []cloud.SchemaEntry{blobs.manifest("doc", false, docMeta), blobs.manifest("folder", false, folderMeta)}
 			case "flat":
-				root += "doc-meta:doc.metadata:0:100\nfolder-meta:folder.metadata:0:100\n"
+				entries = []cloud.SchemaEntry{docMeta, folderMeta}
 			}
-			blobs := map[string]string{
-				"root":          root,
-				"doc-schema":    "doc-meta:doc.metadata:0:100\n",
-				"folder-schema": "folder-meta:folder.metadata:0:100\n",
-				"doc-meta":      `{"visibleName":"2026 - Daily","type":"DocumentType","parent":"folder","lastModified":"1790799655380"}`,
-				"folder-meta":   `{"visibleName":"Plans","type":"CollectionType"}`,
-			}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/sync/v3/root" {
-					if _, err := fmt.Fprint(w, `{"hash":"root","schemaVersion":4}`); err != nil {
-						t.Error(err)
-					}
-					return
-				}
-				for hash, blob := range blobs {
-					if r.URL.Path == "/sync/v3/files/"+hash {
-						if _, err := fmt.Fprint(w, blob); err != nil {
-							t.Error(err)
-						}
-						return
-					}
-				}
-				t.Errorf("unexpected request: %s", r.URL.Path)
-				http.NotFound(w, r)
-			}))
+			root := blobs.manifest("root", true, entries...)
+			// Root aggregate records are not document entries.
+			root = blobs.add("root", "4\n0:.:75:211191896\n"+blobs[root.Hash])
+			server := httptest.NewServer(blobs.handler(t, root.Hash))
+
 			t.Cleanup(server.Close)
 			client, err := cloud.NewClient(cloud.WithStorageHost(server.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}))
 			if err != nil {

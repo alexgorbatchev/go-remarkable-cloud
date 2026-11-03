@@ -52,56 +52,33 @@ func newShuffledListingClient(t *testing.T, layout string, items []listingItem, 
 	t.Helper()
 	var mu sync.Mutex
 	rng := rand.New(rand.NewPCG(seed, seed))
-	byID := make(map[string]listingItem, len(items))
+	blobs := blobFixture{}
+	lines := make([]string, 0, len(items))
 	for _, it := range items {
-		byID[it.id] = it
+		itemType := cloud.ItemTypeDocument
+		if it.folder {
+			itemType = cloud.ItemTypeCollection
+		}
+		data, err := json.Marshal(cloud.ItemMetadata{VisibleName: it.name, Type: itemType, Parent: it.parent, Deleted: it.deleted})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := blobs.add(it.id+".metadata", string(data))
+		if layout != "flat" {
+			entry = blobs.manifest(it.id, false, entry)
+		}
+		lines = append(lines, fmt.Sprintf("%s:%s:%d:%d", entry.Hash, entry.ID, entry.Subfiles, entry.Size))
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		var body string
-		switch {
-		case path == "/sync/v3/root":
-			body = `{"hash":"root","generation":1,"schemaVersion":3}`
-		case path == "/sync/v3/files/root":
-			lines := make([]string, 0, len(items))
-			for _, it := range items {
-				if layout == "flat" {
-					lines = append(lines, "meta-"+it.id+":"+it.id+".metadata:0:1")
-				} else {
-					lines = append(lines, "schema-"+it.id+":"+it.id+":0:1")
-				}
-			}
-			mu.Lock()
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/sync/v3/root" {
 			rng.Shuffle(len(lines), func(i, j int) { lines[i], lines[j] = lines[j], lines[i] })
-			mu.Unlock()
-			body = strings.Join(lines, "\n") + "\n"
-		case strings.HasPrefix(path, "/sync/v3/files/schema-"):
-			id := strings.TrimPrefix(path, "/sync/v3/files/schema-")
-			body = "meta-" + id + ":" + id + ".metadata:0:1\n"
-		case strings.HasPrefix(path, "/sync/v3/files/meta-"):
-			it, ok := byID[strings.TrimPrefix(path, "/sync/v3/files/meta-")]
-			if !ok {
-				t.Errorf("unexpected metadata path: %s", path)
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			itemType := cloud.ItemTypeDocument
-			if it.folder {
-				itemType = cloud.ItemTypeCollection
-			}
-			b, err := json.Marshal(cloud.ItemMetadata{VisibleName: it.name, Type: itemType, Parent: it.parent, Deleted: it.deleted})
-			if err != nil {
-				t.Error(err)
-			}
-			body = string(b)
-		default:
-			t.Errorf("unexpected path: %s", path)
-			w.WriteHeader(http.StatusNotFound)
+			root := blobs.add("root", strings.Join(lines, "\n")+"\n")
+			_, _ = fmt.Fprintf(w, `{"hash":%q,"generation":1,"schemaVersion":3}`, root.Hash)
 			return
 		}
-		if _, err := w.Write([]byte(body)); err != nil {
-			t.Error(err)
-		}
+		blobs.handler(t, "")(w, r)
 	}))
 	t.Cleanup(server.Close)
 	client, err := cloud.NewClient(cloud.WithStorageHost(server.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}))

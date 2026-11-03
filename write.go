@@ -382,8 +382,12 @@ func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) 
 		}
 		return statusErr
 	}
+	body, err := readBoundedBody(resp.Body, maxControlBody)
+	if err != nil {
+		return fmt.Errorf("reading root commit response: %w", err)
+	}
 	var result RootState
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return fmt.Errorf("decoding root commit response: %w", err)
 	}
 	if result.Hash != hash || result.Generation <= generation {

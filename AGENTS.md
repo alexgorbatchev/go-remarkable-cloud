@@ -20,7 +20,7 @@ Pure Go library for the reMarkable Cloud Sync v3 API with zero external dependen
 
 1. **Self-Contained Go**: No Python scripts, wrappers, or external CLI dependencies.
 2. **Deterministic Offline Tests**: All test suites must run in isolation without external network access using `httptest.Server`.
-3. **Restricted File Permissions**: Written credential files (e.g. `~/.rmapi`) must be created with `0600` permissions and safely written via atomic tempfile rename.
+3. **Restricted File Permissions**: Credentials and cached blobs use `0600` files and atomic tempfile rename; cache directories use `0700`. Validate lowercase SHA-256 hashes before filesystem access and verify cached and downloaded bytes. Document schemas hash decoded entry hashes in ID order, while root schemas and ordinary files hash their bytes. Test fixtures must use protocol-valid hashes.
 4. **Code Coverage**: Maintained at >= 90% statement coverage.
 
 ## Commands

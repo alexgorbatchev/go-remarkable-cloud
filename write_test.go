@@ -31,7 +31,7 @@ func TestUpdateDocumentFiles(t *testing.T) {
 			ink := []byte("native ink")
 			pdfHash := blobHash(original)
 			docData := []byte(fmt.Sprintf("3\n%s:0:doc.pdf:0:%d\n", pdfHash, len(original)))
-			docHash := blobHash(docData)
+			docHash := fixtureHash(string(decodedFixtureHash(t, pdfHash)))
 			rootData := []byte(fmt.Sprintf("4\n0:.:2:20\n%s:0:doc:1:10\n%s:80000000:other:1:10\n", docHash, pdfHash))
 			rootHash := blobHash(rootData)
 			root := cloud.RootState{Hash: rootHash, Generation: 5, SchemaVersion: 4}

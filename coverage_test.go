@@ -53,11 +53,11 @@ func TestCoverageBoosters(t *testing.T) {
 	if !errors.Is(err, cloud.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized on root 401, got %v", err)
 	}
-	_, err = c401.GetManifest(ctx, "hash", "")
+	_, err = c401.GetManifest(ctx, fixtureHash("missing"), "")
 	if !errors.Is(err, cloud.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized on manifest 401, got %v", err)
 	}
-	_, err = c401.GetBlob(ctx, "hash", "")
+	_, err = c401.GetBlob(ctx, fixtureHash("missing"), "")
 	if !errors.Is(err, cloud.ErrUnauthorized) {
 		t.Errorf("expected ErrUnauthorized on blob 401, got %v", err)
 	}
@@ -75,12 +75,12 @@ func TestCoverageBoosters(t *testing.T) {
 	)
 
 	var target map[string]any
-	err = cBadJSON.GetContent(ctx, "h", "f", &target)
+	err = cBadJSON.GetContent(ctx, fixtureHash("not-valid-json{"), "f", &target)
 	if err == nil {
 		t.Error("expected unmarshal error in GetContent, got nil")
 	}
 
-	_, err = cBadJSON.GetDocumentContent(ctx, "h", "f")
+	_, err = cBadJSON.GetDocumentContent(ctx, fixtureHash("not-valid-json{"), "f")
 	if err == nil {
 		t.Error("expected unmarshal error in GetDocumentContent, got nil")
 	}
@@ -170,9 +170,11 @@ func TestCoverageBoosters(t *testing.T) {
 	}
 
 	// 12. Item GetManifest with empty Hash but .docSchema in Entries
+	itemBlobs := blobFixture{}
+	itemSchema := itemBlobs.manifest("item123.docSchema", false, itemBlobs.add("doc1.pdf", "pdf bytes"))
 	serverItemSchema := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("h1:doc1.pdf:0:100\n"))
+		_, _ = w.Write([]byte(itemBlobs[itemSchema.Hash]))
 	}))
 	defer serverItemSchema.Close()
 
@@ -184,7 +186,7 @@ func TestCoverageBoosters(t *testing.T) {
 	itemWithSchemaEntry := &cloud.Item{
 		ID: "item123",
 		Entries: []cloud.SchemaEntry{
-			{Hash: "schema-hash-xyz", ID: "item123.docSchema"},
+			{Hash: itemSchema.Hash, ID: "item123.docSchema"},
 		},
 	}
 	itemWithSchemaEntry.BindClient(cItemSchema)
@@ -238,20 +240,11 @@ func TestCoverageBoosters(t *testing.T) {
 	}
 
 	// 16. Fallback item in ListItems when no metadata exists
-	serverNoMeta := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/sync/v3/root":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"hash": "root-nometa", "generation": 1, "schemaVersion": 3}`))
-		case "/sync/v3/files/root-nometa":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("hash-alone:uuid-no-meta:0:50\n"))
-		case "/sync/v3/files/hash-alone":
-			_, _ = w.Write([]byte("content:uuid-no-meta.content:0:50\n"))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
+	noMetaBlobs := blobFixture{}
+	noMetaDoc := noMetaBlobs.manifest("uuid-no-meta", false, noMetaBlobs.add("uuid-no-meta.content", "{}"))
+	noMetaRoot := noMetaBlobs.manifest("root", true, noMetaDoc)
+	serverNoMeta := httptest.NewServer(noMetaBlobs.handler(t, noMetaRoot.Hash))
+
 	defer serverNoMeta.Close()
 
 	cNoMeta, _ := cloud.NewClient(

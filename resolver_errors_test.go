@@ -18,40 +18,24 @@ func TestResolverMetadataErrors(t *testing.T) {
 			}
 			for _, operation := range []string{"list", "id", "resolve", "name", "path"} {
 				t.Run(layout+"/"+failure+"/"+operation, func(t *testing.T) {
+					blobs := blobFixture{}
+					meta := blobs.add("doc.metadata", `{"visibleName":`)
+					schema := blobs.manifest("doc", false, meta)
+					entry := schema
+					if layout == "flat" {
+						entry = meta
+					}
+					root := blobs.manifest("root", true, entry)
+					handler := blobs.handler(t, root.Hash)
 					s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						switch r.URL.Path {
-						case "/sync/v3/root":
-							if _, err := w.Write([]byte(`{"hash":"root"}`)); err != nil {
-								t.Error(err)
-							}
-						case "/sync/v3/files/root":
-							line := "schema:doc:0:1\n"
-							if layout == "flat" {
-								line = "meta:doc.metadata:0:1\n"
-							}
-							if _, err := w.Write([]byte(line)); err != nil {
-								t.Error(err)
-							}
-						case "/sync/v3/files/schema":
-							if failure == "manifest" {
-								w.WriteHeader(http.StatusServiceUnavailable)
-								return
-							}
-							if _, err := w.Write([]byte("meta:doc.metadata:0:1\n")); err != nil {
-								t.Error(err)
-							}
-						case "/sync/v3/files/meta":
-							if failure == "download" {
-								w.WriteHeader(http.StatusServiceUnavailable)
-								return
-							}
-							if _, err := w.Write([]byte(`{"visibleName":`)); err != nil {
-								t.Error(err)
-							}
-						default:
-							w.WriteHeader(http.StatusNotFound)
+						if (failure == "manifest" && r.URL.Path == "/sync/v3/files/"+schema.Hash) ||
+							(failure == "download" && r.URL.Path == "/sync/v3/files/"+meta.Hash) {
+							w.WriteHeader(http.StatusServiceUnavailable)
+							return
 						}
+						handler(w, r)
 					}))
+
 					defer s.Close()
 					c, err := cloud.NewClient(cloud.WithStorageHost(s.URL), cloud.WithConfig(&cloud.Config{UserToken: "test"}))
 					if err != nil {

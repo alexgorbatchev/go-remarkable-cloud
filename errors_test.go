@@ -71,8 +71,9 @@ const (
 	rootPath  = "/sync/v3/root"
 	renewPath = "/token/json/2/user/new"
 	pairPath  = "/token/json/2/device/new"
-	blobPath  = "/sync/v3/files/blob-hash"
 )
+
+var blobPath = "/sync/v3/files/" + fixtureHash("missing")
 
 func TestStatusErrorClassification(t *testing.T) {
 	userToken := cloud.Config{UserToken: "user-token"}
@@ -127,36 +128,36 @@ func TestStatusErrorClassification(t *testing.T) {
 			name: "GetBlob 500",
 			call: func(t *testing.T) error {
 				c := newCannedClient(t, map[string]cannedResponse{blobPath: {http.StatusInternalServerError, "storage failure"}}, userToken)
-				_, err := c.GetBlob(context.Background(), "blob-hash", "doc.pdf")
+				_, err := c.GetBlob(context.Background(), fixtureHash("missing"), "doc.pdf")
 				return err
 			},
 			wantStatus: http.StatusInternalServerError,
 			wantBody:   "storage failure",
-			wantText:   "get blob blob-hash (doc.pdf) failed with status 500: storage failure",
+			wantText:   "get blob " + fixtureHash("missing") + " (doc.pdf) failed with status 500: storage failure",
 		},
 		{
 			name: "GetBlobFresh 404",
 			call: func(t *testing.T) error {
 				c := newCannedClient(t, map[string]cannedResponse{blobPath: {http.StatusNotFound, "no such object"}}, userToken)
-				_, err := c.GetBlobFresh(context.Background(), "blob-hash", "doc.pdf")
+				_, err := c.GetBlobFresh(context.Background(), fixtureHash("missing"), "doc.pdf")
 				return err
 			},
 			wantStatus: http.StatusNotFound,
 			wantBody:   "no such object",
 			sentinel:   cloud.ErrItemNotFound,
-			wantText:   "item not found: get blob blob-hash (doc.pdf) failed with status 404: no such object",
+			wantText:   "item not found: get blob " + fixtureHash("missing") + " (doc.pdf) failed with status 404: no such object",
 		},
 		{
 			name: "GetManifest 403 without renewal",
 			call: func(t *testing.T) error {
 				c := newCannedClient(t, map[string]cannedResponse{blobPath: {http.StatusForbidden, "denied"}}, userToken, cloud.WithAutoRenew(false))
-				_, err := c.GetManifest(context.Background(), "blob-hash", "root")
+				_, err := c.GetManifest(context.Background(), fixtureHash("missing"), "root")
 				return err
 			},
 			wantStatus: http.StatusForbidden,
 			wantBody:   "denied",
 			sentinel:   cloud.ErrUnauthorized,
-			wantText:   "unauthorized: missing or invalid credentials: get blob blob-hash (root.docSchema) failed with status 403: denied",
+			wantText:   "unauthorized: missing or invalid credentials: get blob " + fixtureHash("missing") + " (root.docSchema) failed with status 403: denied",
 		},
 		{
 			name: "RenewToken 500",

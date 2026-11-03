@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -125,14 +126,17 @@ func NewClient(opts ...Option) (*Client, error) {
 	// If config path is specified or default loading requested, load from disk
 	if c.configPath != "" {
 		loadedCfg, err := ReadConfigFile(c.configPath)
-		if err == nil {
-			c.cfg = *loadedCfg
+		if err != nil {
+			return nil, fmt.Errorf("load configured credentials: %w", err)
 		}
+		c.cfg = *loadedCfg
 	} else if c.loadDefaultConfig && c.cfg.DeviceToken == "" && c.cfg.UserToken == "" {
 		loadedCfg, path, err := LoadConfig("")
 		if err == nil {
 			c.cfg = *loadedCfg
 			c.configPath = path
+		} else if !errors.Is(err, ErrConfigNotFound) {
+			return nil, fmt.Errorf("load default credentials: %w", err)
 		}
 	}
 
@@ -172,6 +176,7 @@ func (c *Client) PairDevice(ctx context.Context, code string) (string, error) {
 }
 
 // RenewToken mints a fresh user token from the configured device token and stores it.
+// If persistence fails, it returns the new token with an error and retains it in memory.
 func (c *Client) RenewToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	deviceToken := c.cfg.DeviceToken
@@ -196,7 +201,9 @@ func (c *Client) RenewToken(ctx context.Context) (string, error) {
 	c.mu.Unlock()
 
 	if saveOnRenew && configPath != "" {
-		_ = WriteConfigFile(configPath, &cfgCopy)
+		if err := WriteConfigFile(configPath, &cfgCopy); err != nil {
+			return userToken, fmt.Errorf("persist renewed token: %w", err)
+		}
 	}
 
 	return userToken, nil
@@ -235,8 +242,11 @@ func (c *Client) executeWithAuth(ctx context.Context, makeReq func(userToken str
 
 	// Auto-renew on 401/403 or malformed token if enabled
 	if c.autoRenew && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusBadRequest) {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxStatusBody+1))
 		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read authentication rejection: %w", readErr)
+		}
 		if resp.StatusCode != http.StatusBadRequest || strings.Contains(string(bodyBytes), "token") {
 			newToken, renewErr := c.RenewToken(ctx)
 			if renewErr != nil {
@@ -277,7 +287,11 @@ func (c *Client) GetRootState(ctx context.Context) (*RootState, error) {
 	}
 
 	var rootState RootState
-	if err := json.NewDecoder(resp.Body).Decode(&rootState); err != nil {
+	body, err := readBoundedBody(resp.Body, maxControlBody)
+	if err != nil {
+		return nil, fmt.Errorf("read root state: %w", err)
+	}
+	if err := json.Unmarshal(body, &rootState); err != nil {
 		return nil, fmt.Errorf("decode root state: %w", err)
 	}
 	return &rootState, nil
@@ -295,7 +309,9 @@ func (c *Client) GetManifest(ctx context.Context, hash, filename string) (*Manif
 	return ParseManifest(hash, bytes.NewReader(data))
 }
 
-// GetBlob downloads the raw content bytes for a file identified by hash and rm-filename.
+// GetBlob downloads and verifies up to 512 MiB for a lowercase SHA-256 hash and rm-filename.
+// Document schemas use their ordered entry hashes; other files use their content bytes.
+// Cache directories and files are created with modes 0700 and 0600, respectively.
 func (c *Client) GetBlob(ctx context.Context, hash, filename string) ([]byte, error) {
 	return c.getBlob(ctx, hash, filename, true)
 }
@@ -306,10 +322,20 @@ func (c *Client) GetBlobFresh(ctx context.Context, hash, filename string) ([]byt
 }
 
 func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool) ([]byte, error) {
-	if cache && c.cacheDir != "" && hash != "" {
+	if !validBlobHash(hash) {
+		return nil, fmt.Errorf("%w: expected a lowercase SHA-256 hash", ErrInvalidSchema)
+	}
+	if cache && c.cacheDir != "" {
 		cachePath := filepath.Join(c.cacheDir, "blobs", hash)
-		if data, err := os.ReadFile(cachePath); err == nil && len(data) > 0 {
-			return data, nil
+		if data, err := readCachedBlob(cachePath); err == nil {
+			if err := verifyBlob(hash, filename, data); err == nil {
+				return data, nil
+			}
+			if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("remove corrupt cache entry: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read cached blob: %w", err)
 		}
 	}
 
@@ -339,18 +365,17 @@ func (c *Client) getBlob(ctx context.Context, hash, filename string, cache bool)
 		return nil, statusErr
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := readBoundedBody(resp.Body, maxBlobBody)
 	if err != nil {
 		return nil, err
 	}
 
-	if cache && c.cacheDir != "" && hash != "" {
-		dir := filepath.Join(c.cacheDir, "blobs")
-		_ = os.MkdirAll(dir, 0755)
-		cachePath := filepath.Join(dir, hash)
-		tmpPath := fmt.Sprintf("%s.tmp.%d", cachePath, time.Now().UnixNano())
-		if err := os.WriteFile(tmpPath, data, 0644); err == nil {
-			_ = os.Rename(tmpPath, cachePath)
+	if err := verifyBlob(hash, filename, data); err != nil {
+		return nil, err
+	}
+	if cache && c.cacheDir != "" {
+		if err := writeCachedBlob(c.cacheDir, hash, data); err != nil {
+			return nil, fmt.Errorf("cache downloaded blob: %w", err)
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 var (
@@ -43,8 +44,10 @@ type StatusError struct {
 	Op string
 	// StatusCode is the HTTP response status code.
 	StatusCode int
-	// Body is the response body exactly as the server sent it.
+	// Body contains at most the first 4096 bytes of the response.
 	Body string
+	// Truncated reports whether the response body exceeded that limit.
+	Truncated bool
 	// Err is the sentinel classification for the status, or nil when it has none.
 	Err error
 }
@@ -53,7 +56,11 @@ type StatusError struct {
 func (e *StatusError) Error() string {
 	msg := fmt.Sprintf("%s failed with status %d", e.Op, e.StatusCode)
 	if e.Body != "" {
-		msg += ": " + e.Body
+		quoted := strconv.Quote(e.Body)
+		msg += ": " + quoted[1:len(quoted)-1]
+	}
+	if e.Truncated {
+		msg += " [truncated]"
 	}
 	if e.Err != nil {
 		return e.Err.Error() + ": " + msg
@@ -123,6 +130,10 @@ func (e *AmbiguousNameError) Unwrap() error {
 // newStatusError classifies a rejected response; 401 and 403 always mean the credentials were refused.
 func newStatusError(op string, statusCode int, body []byte) *StatusError {
 	e := &StatusError{Op: op, StatusCode: statusCode, Body: string(body)}
+	if len(body) > maxStatusBody {
+		e.Body = string(body[:maxStatusBody])
+		e.Truncated = true
+	}
 	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
 		e.Err = ErrUnauthorized
 	}
@@ -132,6 +143,6 @@ func newStatusError(op string, statusCode int, body []byte) *StatusError {
 // readStatusError reads the rejected response body and classifies the response.
 func readStatusError(op string, resp *http.Response) *StatusError {
 	// The status code already decides the failure; a body read error only loses the server reason.
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxStatusBody+1))
 	return newStatusError(op, resp.StatusCode, body)
 }

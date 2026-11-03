@@ -3,9 +3,7 @@ package cloud_test
 import (
 	"context"
 	"errors"
-	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	cloud "github.com/alexgorbatchev/go-remarkable-cloud"
@@ -13,70 +11,17 @@ import (
 
 func setupResolverMockServer(t *testing.T) *httptest.Server {
 	t.Helper()
-
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		filename := r.Header.Get("rm-filename")
-
-		switch path {
-		case "/sync/v3/root":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"hash": "root-hash", "generation": 10, "schemaVersion": 3}`))
-
-		case "/sync/v3/files/root-hash":
-			// Root manifest lines
-			lines := []string{
-				"meta-work:folder-work.metadata:0:100",
-				"schema-work:folder-work.docSchema:0:200",
-				"meta-proj:folder-proj.metadata:0:100",
-				"schema-proj:folder-proj.docSchema:0:200",
-				"meta-daily:doc-daily.metadata:0:100",
-				"schema-daily:doc-daily.docSchema:0:200",
-				"content-daily:doc-daily.content:0:300",
-				"meta-deleted:doc-deleted.metadata:0:100",
-				"meta-inbox:doc-inbox.metadata:0:100",
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))
-
-		case "/sync/v3/files/schema-daily":
-			lines := []string{
-				"meta-daily:doc-daily.metadata:0:100",
-				"content-daily:doc-daily.content:0:300",
-				"pdf-daily:doc-daily.pdf:0:100000",
-			}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))
-
-		case "/sync/v3/files/meta-work":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Work", "type": "CollectionType", "parent": "", "deleted": false}`))
-
-		case "/sync/v3/files/meta-proj":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Projects", "type": "CollectionType", "parent": "folder-work", "deleted": false}`))
-
-		case "/sync/v3/files/meta-daily":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "2026 - Daily", "type": "DocumentType", "parent": "folder-proj", "deleted": false}`))
-
-		case "/sync/v3/files/meta-deleted":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Old Trash", "type": "DocumentType", "parent": "", "deleted": true}`))
-
-		case "/sync/v3/files/meta-inbox":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"visibleName": "Inbox Note", "type": "DocumentType", "parent": "", "deleted": false}`))
-
-		case "/sync/v3/files/content-daily":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"fileType": "pdf", "pageCount": 42}`))
-
-		default:
-			t.Logf("unhandled mock path: %s (filename: %s)", path, filename)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
+	blobs := blobFixture{}
+	work := blobs.add("folder-work.metadata", `{"visibleName":"Work","type":"CollectionType"}`)
+	proj := blobs.add("folder-proj.metadata", `{"visibleName":"Projects","type":"CollectionType","parent":"folder-work"}`)
+	daily := blobs.add("doc-daily.metadata", `{"visibleName":"2026 - Daily","type":"DocumentType","parent":"folder-proj"}`)
+	deleted := blobs.add("doc-deleted.metadata", `{"visibleName":"Old Trash","type":"DocumentType","deleted":true}`)
+	inbox := blobs.add("doc-inbox.metadata", `{"visibleName":"Inbox Note","type":"DocumentType"}`)
+	content := blobs.add("doc-daily.content", `{"fileType":"pdf","pageCount":42}`)
+	pdf := blobs.add("doc-daily.pdf", "test pdf")
+	schema := blobs.manifest("doc-daily.docSchema", false, daily, content, pdf)
+	root := blobs.manifest("root", true, work, proj, daily, deleted, inbox, content, schema)
+	return httptest.NewServer(blobs.handler(t, root.Hash))
 }
 
 func TestResolver_ListItems(t *testing.T) {
