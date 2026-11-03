@@ -34,6 +34,22 @@ var (
 	ErrDiscoveryFailed = errors.New("service discovery failed")
 )
 
+// requestNotAppliedError marks failures before sending an operation, including
+// failed renewal after a definite authentication rejection and before its replay.
+type requestNotAppliedError struct{ err error }
+
+func (e *requestNotAppliedError) Error() string { return e.err.Error() }
+func (e *requestNotAppliedError) Unwrap() error { return e.err }
+
+func definiteCommitFailure(err error) bool {
+	var notApplied *requestNotAppliedError
+	if errors.As(err, &notApplied) {
+		return true
+	}
+	var status *StatusError
+	return errors.As(err, &status) && status.StatusCode >= 400 && status.StatusCode < 500
+}
+
 // StatusError reports an HTTP response whose status the requested operation does not accept.
 // Callers read the status with errors.As. When the status has a domain meaning, Err holds the
 // matching sentinel so errors.Is also reports it: ErrItemNotFound for a missing blob,

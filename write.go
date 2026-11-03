@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"hash/crc32"
 	"net/http"
@@ -101,7 +100,7 @@ func (c *Client) applyDocumentUpdate(ctx context.Context, id string, update *doc
 	result.RootHash = update.rootHash
 	result.State = UpdateCommitUnknown
 	if err := c.commitRoot(ctx, update.rootHash, update.generation); err != nil {
-		if errors.Is(err, ErrGenerationConflict) {
+		if definiteCommitFailure(err) {
 			result.State = UpdateStaged
 		}
 		return result, err
@@ -372,6 +371,9 @@ func (c *Client) commitRoot(ctx context.Context, hash string, generation int64) 
 		return req, nil
 	})
 	if err != nil {
+		if definiteCommitFailure(err) {
+			return err
+		}
 		return fmt.Errorf("root commit outcome unknown: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()

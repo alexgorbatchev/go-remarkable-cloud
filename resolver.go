@@ -94,9 +94,10 @@ func (it *Item) GetContent(ctx context.Context) (*DocumentContent, error) {
 	if contentEntry == nil {
 		// Attempt manifest lookup first
 		m, err := it.GetManifest(ctx)
-		if err == nil {
-			contentEntry = m.FindSuffix(".content")
+		if err != nil {
+			return nil, fmt.Errorf("get manifest for content of %s: %w", it.ID, err)
 		}
+		contentEntry = m.FindSuffix(".content")
 	}
 	if contentEntry == nil {
 		return nil, fmt.Errorf("%w: content entry not found for item %s", ErrItemNotFound, it.ID)

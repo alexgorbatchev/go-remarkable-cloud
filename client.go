@@ -227,12 +227,12 @@ func (c *Client) getUserToken(ctx context.Context) (string, error) {
 func (c *Client) executeWithAuth(ctx context.Context, makeReq func(userToken string) (*http.Request, error)) (*http.Response, error) {
 	token, err := c.getUserToken(ctx)
 	if err != nil {
-		return nil, err
+		return nil, &requestNotAppliedError{err}
 	}
 
 	req, err := makeReq(token)
 	if err != nil {
-		return nil, err
+		return nil, &requestNotAppliedError{err}
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -240,26 +240,19 @@ func (c *Client) executeWithAuth(ctx context.Context, makeReq func(userToken str
 		return nil, err
 	}
 
-	// Auto-renew on 401/403 or malformed token if enabled
-	if c.autoRenew && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusBadRequest) {
-		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxStatusBody+1))
+	// Only explicit authentication rejections authorize a renewal and replay.
+	if c.autoRenew && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxStatusBody+1))
 		_ = resp.Body.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("read authentication rejection: %w", readErr)
+		newToken, renewErr := c.RenewToken(ctx)
+		if renewErr != nil {
+			return nil, &requestNotAppliedError{fmt.Errorf("auth renewal failed after %d: %w", resp.StatusCode, renewErr)}
 		}
-		if resp.StatusCode != http.StatusBadRequest || strings.Contains(string(bodyBytes), "token") {
-			newToken, renewErr := c.RenewToken(ctx)
-			if renewErr != nil {
-				return nil, fmt.Errorf("auth renewal failed after %d: %w", resp.StatusCode, renewErr)
-			}
-
-			retryReq, err := makeReq(newToken)
-			if err != nil {
-				return nil, err
-			}
-			return c.httpClient.Do(retryReq)
+		retryReq, err := makeReq(newToken)
+		if err != nil {
+			return nil, &requestNotAppliedError{err}
 		}
-		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		return c.httpClient.Do(retryReq)
 	}
 
 	return resp, nil
